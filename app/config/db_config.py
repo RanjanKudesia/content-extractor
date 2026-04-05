@@ -9,7 +9,8 @@ from dotenv import load_dotenv
 class MongoDbConfig:
     mongo_uri: str
     database_name: str
-    collection_name: str
+    uploads_collection_name: str
+    content_collection_name: str
 
 
 def load_mongodb_config() -> MongoDbConfig:
@@ -23,7 +24,10 @@ def load_mongodb_config() -> MongoDbConfig:
     return MongoDbConfig(
         mongo_uri=mongo_uri,
         database_name=os.getenv("MONGODB_DATABASE", "content_extractor"),
-        collection_name=os.getenv("MONGODB_COLLECTION", "extractions"),
+        uploads_collection_name=os.getenv(
+            "MONGODB_UPLOADS_COLLECTION", "uploads"),
+        content_collection_name=os.getenv(
+            "MONGODB_CONTENT_COLLECTION", "content"),
     )
 
 

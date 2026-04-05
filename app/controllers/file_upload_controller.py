@@ -57,6 +57,7 @@ class FileUploadController:
     async def execute(
         self,
         file: UploadFile,
+        user_id: str,
         output_format: Literal["json", "xml"] = "json",
     ) -> FileUploadResponse:
         if not file.filename:
@@ -72,7 +73,8 @@ class FileUploadController:
         self.logger.info(
             "Starting extraction",
             extra={"original_filename": original_filename,
-                   "requested_output_format": output_format},
+                   "requested_output_format": output_format,
+                   "user_id": user_id},
         )
 
         if not stem.strip() or not FILENAME_REGEX.fullmatch(stem):
@@ -138,7 +140,7 @@ class FileUploadController:
                     detail="HTML extraction currently supports only output_format='json'.",
                 )
 
-            extracted_data, output_file_path = self.html_json_adapter.run(
+            extracted_data, _ = self.html_json_adapter.run(
                 file_bytes=file_bytes,
                 output_basename=Path(stored_filename).stem,
             )
@@ -149,7 +151,7 @@ class FileUploadController:
                     detail="Markdown extraction currently supports only output_format='json'.",
                 )
 
-            extracted_data, output_file_path = self.markdown_json_adapter.run(
+            extracted_data, _ = self.markdown_json_adapter.run(
                 file_bytes=file_bytes,
                 output_basename=Path(stored_filename).stem,
             )
@@ -160,28 +162,28 @@ class FileUploadController:
                     detail="TXT extraction currently supports only output_format='json'.",
                 )
 
-            extracted_data, output_file_path = self.text_json_adapter.run(
+            extracted_data, _ = self.text_json_adapter.run(
                 file_bytes=file_bytes,
                 output_basename=Path(stored_filename).stem,
             )
         elif normalized_extension == "pptx":
             if output_format == "xml":
-                extracted_data, output_file_path = self.ppt_xml_pipeline.run(
+                extracted_data, _ = self.ppt_xml_pipeline.run(
                     file_bytes=file_bytes,
                     output_basename=Path(stored_filename).stem,
                 )
             else:
-                extracted_data, output_file_path = self.ppt_json_adapter.run(
+                extracted_data, _ = self.ppt_json_adapter.run(
                     file_bytes=file_bytes,
                     output_basename=Path(stored_filename).stem,
                 )
         elif output_format == "xml":
-            extracted_data, output_file_path = self.docx_xml_adapter.run(
+            extracted_data, _ = self.docx_xml_adapter.run(
                 file_bytes=extraction_bytes,
                 output_basename=Path(stored_filename).stem,
             )
         else:
-            extracted_data, output_file_path = self.docx_json_adapter.run(
+            extracted_data, _ = self.docx_json_adapter.run(
                 file_bytes=extraction_bytes,
                 output_basename=Path(stored_filename).stem,
             )
@@ -239,18 +241,25 @@ class FileUploadController:
             ) from e
 
         try:
-            db_record_id = self.mongo_adapter.save_extraction(
+            upload_id = self.mongo_adapter.save_upload(
                 {
+                    "user_id": user_id,
                     "original_filename": original_filename,
                     "stored_filename": stored_filename,
                     "extension": normalized_extension,
                     "output_format": output_format,
                     "uploaded_file_s3_key": uploaded_file_key,
-                    "output_file_path": output_file_path,
-                    "version": 0,
-                    "extracted_data": rewritten_payload,
                 }
             )
+            content_id = self.mongo_adapter.save_content(
+                {
+                    "upload_id": upload_id,
+                    "version": 0,
+                    "data": rewritten_payload,
+                }
+            )
+            self.mongo_adapter.add_content_version(
+                upload_id, content_id, version=0)
         except MongoStorageError as e:
             safe_cleanup_uploaded()
             self.logger.exception(
@@ -266,20 +275,22 @@ class FileUploadController:
                 "original_filename": original_filename,
                 "extension": normalized_extension,
                 "output_format": output_format,
-                "db_record_id": db_record_id,
+                "upload_id": upload_id,
+                "content_id": content_id,
             },
         )
 
         return FileUploadResponse(
+            upload_id=upload_id,
+            user_id=user_id,
             original_filename=original_filename,
             stored_filename=stored_filename,
             extension=normalized_extension,
-            extracted_data=rewritten_payload,
-            output_file_path=output_file_path,
             output_format=output_format,
-            db_record_id=db_record_id,
             uploaded_file_s3_key=uploaded_file_key,
-            version=0,
+            content_versions=[{"content_id": content_id, "version": 0}],
+            created_at=self._now_iso(),
+            updated_at=self._now_iso(),
         )
 
     def _upload_media_and_rewrite(self, payload: dict, extraction_folder: str) -> tuple[dict, list[str]]:
@@ -299,7 +310,7 @@ class FileUploadController:
                 return None
 
             key = self.s3_adapter.build_key(
-                "media", extraction_folder, file_name)
+                "uploads", extraction_folder, "media", file_name)
             self.s3_adapter.upload_bytes(
                 data=data, key=key, content_type=content_type)
             upload_cache[cache_key] = key
@@ -327,7 +338,7 @@ class FileUploadController:
                 return upload_cache[cache_key]
 
             key = self.s3_adapter.build_key(
-                "media", extraction_folder, file_name)
+                "uploads", extraction_folder, "media", file_name)
             self.s3_adapter.upload_file(
                 path, key=key, content_type=content_type)
             upload_cache[cache_key] = key
@@ -387,3 +398,8 @@ class FileUploadController:
 
         walked = walk(dict(payload))
         return (walked if isinstance(walked, dict) else payload), uploaded_media_keys
+
+    @staticmethod
+    def _now_iso() -> str:
+        from datetime import datetime, timezone
+        return datetime.now(timezone.utc).isoformat()

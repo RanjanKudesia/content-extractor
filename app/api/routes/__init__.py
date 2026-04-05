@@ -11,6 +11,7 @@ from app.adapters.docx_json_extraction_adapter import DocxJsonExtractionAdapter
 from app.adapters.docx_xml_extraction_adapter import DocxXmlExtractionAdapter
 from app.adapters.html_json_extraction_adapter import HtmlJsonExtractionAdapter
 from app.adapters.markdown_json_extraction_adapter import MarkdownJsonExtractionAdapter
+from app.adapters.mongodb_storage_adapter import MongoStorageError
 from app.adapters.mongodb_storage_adapter import MongoDbStorageAdapter
 from app.adapters.ppt_json_extraction_adapter import PptJsonExtractionAdapter
 from app.adapters.s3_storage_adapter import S3StorageAdapter
@@ -22,6 +23,7 @@ from app.pipelines.docx_extraction_pipeline import DocxExtractionPipeline
 from app.pipelines.health_pipeline import HealthPipeline
 from app.pipelines.pdf_conversion_pipeline import PdfConversionPipeline
 from app.pipelines.ppt_xml_extraction_pipeline import PptXmlExtractionPipeline
+from app.schemas.content_schema import ContentResponse
 from app.schemas.file_upload_schema import FileUploadResponse
 from app.schemas.health_schema import HealthResponse
 
@@ -124,17 +126,65 @@ def create_file_upload_controller() -> FileUploadController:
 )
 async def extract_content(
     file: Annotated[UploadFile, File(...)],
+    user_id: Annotated[str, Form()],
     output_format: Annotated[Literal["json", "xml"], Form()] = "json",
 ) -> FileUploadResponse:
     """Extract structured content from an uploaded file."""
     logger.info(
         "Received extraction request",
         extra={"request_filename": file.filename,
-               "output_format": output_format},
+               "output_format": output_format,
+               "user_id": user_id},
     )
     validated_file = validate_upload_schema(file)
     controller = create_file_upload_controller()
     return await controller.execute(
         validated_file,
+        user_id=user_id,
         output_format=output_format,
+    )
+
+
+@router.get(
+    "/content",
+    tags=["content"],
+    summary="Get extracted content by content_id and version",
+)
+def get_content(
+    content_id: str,
+    version: int,
+) -> ContentResponse:
+    """Fetch extracted content document by content_id and version."""
+    _, mongo_adapter = get_storage_adapters()
+    try:
+        found = mongo_adapter.get_content(
+            content_id=content_id, version=version)
+    except MongoStorageError as e:
+        detail = str(e)
+        if "Invalid content_id format" in detail:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=detail,
+            ) from e
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=detail,
+        ) from e
+
+    if not found:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Content not found for the provided content_id and version.",
+        )
+
+    created_at = found.get("created_at")
+    updated_at = found.get("updated_at")
+    return ContentResponse(
+        content_id=found["_id"],
+        version=int(found.get("version", version)),
+        data=found.get("data") if isinstance(found.get("data"), dict) else {},
+        created_at=created_at.isoformat() if hasattr(
+            created_at, "isoformat") else str(created_at),
+        updated_at=updated_at.isoformat() if hasattr(
+            updated_at, "isoformat") else str(updated_at),
     )
