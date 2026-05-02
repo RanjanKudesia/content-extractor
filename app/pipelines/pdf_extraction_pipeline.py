@@ -482,7 +482,7 @@ def _extract_document_defaults(
     }
 
 
-def _count_fonts(doc: fitz.Document) -> Counter[str]:
+def _count_fonts(doc: fitz.Document) -> Counter[str]:  # NOSONAR
     """Count font-name occurrences across all page spans."""
     counter: Counter[str] = Counter()
     for page_num, page in enumerate(doc):
@@ -501,7 +501,7 @@ def _count_fonts(doc: fitz.Document) -> Counter[str]:
     return counter
 
 
-def _collect_font_sizes(doc: fitz.Document) -> list[float]:
+def _collect_font_sizes(doc: fitz.Document) -> list[float]:  # NOSONAR
     """Collect all span font sizes across the document."""
     sizes: list[float] = []
     for page in doc:
@@ -517,7 +517,7 @@ def _collect_font_sizes(doc: fitz.Document) -> list[float]:
     return sizes
 
 
-def _collect_unique_font_names(doc: fitz.Document) -> list[str]:
+def _collect_unique_font_names(doc: fitz.Document) -> list[str]:  # NOSONAR
     """Return a sorted, deduplicated list of font names used in the document."""
     names: set[str] = set()
     for page in doc:
@@ -537,7 +537,7 @@ def _collect_form_fields(doc: fitz.Document) -> list[dict]:
     """Extract all interactive form fields (widgets) from the PDF."""
     fields: list[dict] = []
     # Widget type codes → human-readable names.
-    _WIDGET_TYPES = {
+    _WIDGET_TYPES = {  # pylint: disable=invalid-name
         1: "button",
         2: "checkbox",
         3: "radio",
@@ -566,7 +566,7 @@ def _collect_form_fields(doc: fitz.Document) -> list[dict]:
                     "choices": list(choices),
                     "tooltip": getattr(widget, "field_label", None) or None,
                 })
-    except Exception:
+    except (AttributeError, RuntimeError, TypeError, ValueError):
         pass
     return fields
 

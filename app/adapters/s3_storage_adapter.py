@@ -1,3 +1,4 @@
+"""S3-compatible storage adapter for the content-extractor service."""
 import logging
 import mimetypes
 from pathlib import Path
@@ -11,10 +12,12 @@ from app.config.storage_config import S3StorageConfig, load_s3_storage_config
 
 
 class S3UploadError(RuntimeError):
-    pass
+    """Raised when an S3 operation fails."""
 
 
 class S3StorageAdapter:
+    """Thin wrapper around boto3 for upload, download, and delete operations."""
+
     def __init__(self, config: S3StorageConfig | None = None) -> None:
         self.logger = logging.getLogger(__name__)
         self.config = config or load_s3_storage_config()
@@ -49,6 +52,7 @@ class S3StorageAdapter:
         )
 
     def upload_bytes(self, data: bytes, key: str, content_type: str | None = None) -> str:
+        """Upload raw bytes to S3 and return the key."""
         params: dict[str, object] = {
             "Bucket": self.bucket_name,
             "Key": key,
@@ -72,11 +76,13 @@ class S3StorageAdapter:
         return key
 
     def upload_file(self, file_path: Path | str, key: str, content_type: str | None = None) -> str:
+        """Upload a file from disk to S3 and return the key."""
         path = Path(file_path)
         guessed_type = content_type or mimetypes.guess_type(str(path))[0]
         return self.upload_bytes(path.read_bytes(), key, guessed_type)
 
     def delete_key(self, key: str) -> None:
+        """Delete a single S3 object by key."""
         try:
             self.client.delete_object(Bucket=self.bucket_name, Key=key)
             self.logger.debug("S3 delete succeeded", extra={"s3_key": key})
@@ -90,6 +96,7 @@ class S3StorageAdapter:
             ) from e
 
     def download_bytes(self, key: str) -> bytes:
+        """Download an S3 object and return its raw bytes."""
         try:
             response = self.client.get_object(Bucket=self.bucket_name, Key=key)
             body = response.get("Body")
@@ -109,7 +116,10 @@ class S3StorageAdapter:
                 f"S3 download failed ({code}): {message}."
             ) from e
 
-    def generate_presigned_download_url(self, key: str, expires_in_seconds: int = 3600) -> str:
+    def generate_presigned_download_url(
+        self, key: str, expires_in_seconds: int = 3600
+    ) -> str:
+        """Generate a time-limited presigned download URL."""
         try:
             url = self.client.generate_presigned_url(
                 "get_object",
@@ -131,6 +141,7 @@ class S3StorageAdapter:
             ) from e
 
     def check_bucket_access(self) -> bool:
+        """Return True if the configured bucket is accessible."""
         try:
             self.client.head_bucket(Bucket=self.bucket_name)
             self.logger.debug("S3 bucket access check succeeded", extra={
@@ -150,7 +161,8 @@ class S3StorageAdapter:
             if e.response.get("Error", {}).get("Code") in ("404", "NoSuchKey"):
                 return False
             code = e.response.get("Error", {}).get("Code", "Unknown")
-            raise S3UploadError(f"S3 head_object failed ({code}): {str(e)}") from e
+            raise S3UploadError(
+                f"S3 head_object failed ({code}): {str(e)}") from e
 
     def delete_keys(self, keys: list[str]) -> int:
         """Batch-delete up to 1000 keys per call. Returns the number deleted."""
@@ -159,7 +171,7 @@ class S3StorageAdapter:
         deleted = 0
         chunk_size = 1000
         for i in range(0, len(keys), chunk_size):
-            chunk = keys[i : i + chunk_size]
+            chunk = keys[i: i + chunk_size]
             objects = [{"Key": k} for k in chunk]
             try:
                 resp = self.client.delete_objects(
@@ -175,10 +187,12 @@ class S3StorageAdapter:
             except ClientError as e:
                 code = e.response.get("Error", {}).get("Code", "Unknown")
                 self.logger.exception("S3 batch delete failed")
-                raise S3UploadError(f"S3 batch delete failed ({code}): {str(e)}") from e
+                raise S3UploadError(
+                    f"S3 batch delete failed ({code}): {str(e)}") from e
         return deleted
 
     def build_key(self, *parts: str) -> str:
+        """Build an S3 object key by joining the configured prefix with the given path parts."""
         segments = [self.key_prefix]
         for part in parts:
             cleaned = (part or "").strip("/")

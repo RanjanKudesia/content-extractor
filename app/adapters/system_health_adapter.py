@@ -1,3 +1,4 @@
+"""System health adapter — checks connectivity to S3 and MongoDB."""
 from datetime import UTC, datetime
 import logging
 import os
@@ -7,6 +8,8 @@ from app.adapters.s3_storage_adapter import S3StorageAdapter
 
 
 class SystemHealthAdapter:
+    """Checks S3 and MongoDB connectivity and returns a health summary."""
+
     def __init__(
         self,
         s3_adapter: S3StorageAdapter | None = None,
@@ -17,6 +20,7 @@ class SystemHealthAdapter:
         self.mongo_adapter = mongo_adapter
 
     def fetch(self) -> dict:
+        """Return a health summary dict with service status and dependency checks."""
         dependencies: dict[str, str] = {}
 
         if self.s3_adapter is not None:

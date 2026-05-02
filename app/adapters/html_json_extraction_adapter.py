@@ -9,6 +9,8 @@ logger = logging.getLogger(__name__)
 
 
 class HtmlJsonExtractionAdapter:
+    """Adapter that extracts structured JSON data from HTML files."""
+
     def __init__(self) -> None:
         self.pipeline = HtmlExtractionPipeline()
 
@@ -18,6 +20,7 @@ class HtmlJsonExtractionAdapter:
         output_basename: str,
         include_media: bool = True,
     ) -> tuple[dict[str, Any], str]:
+        """Run HTML extraction and return (data_dict, virtual_path)."""
         logger.debug(
             "Starting HTML extraction adapter run",
             extra={

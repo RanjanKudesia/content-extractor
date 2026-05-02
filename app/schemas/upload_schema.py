@@ -1,24 +1,31 @@
+"""Pydantic schemas for upload-related API responses."""
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 
 class ContentVersionItem(BaseModel):
+    """A single content version entry within an upload record."""
     content_id: str = Field(description="Content record ID.")
     version: int = Field(description="Version number.", examples=[0])
 
 
 class UploadRecord(BaseModel):
+    """Full upload record as returned by the listing endpoint."""
     upload_id: str = Field(
         description="MongoDB upload record ID.",
         examples=["69f6432f423c9bfe1bf883a0"],
     )
-    user_id: str = Field(description="Caller/user identifier.", examples=["user-123"])
-    original_filename: str = Field(description="Original client filename.", examples=["report.pdf"])
+    user_id: str = Field(
+        description="Caller/user identifier.", examples=["user-123"])
+    original_filename: str = Field(
+        description="Original client filename.", examples=["report.pdf"])
     stored_filename: str = Field(description="Internal stored filename.")
     uploaded_file_s3_key: str = Field(description="S3 key for source file.")
-    extension: str = Field(description="Normalized file extension.", examples=["pdf"])
-    extract_media: bool = Field(description="Whether media extraction was enabled.")
+    extension: str = Field(
+        description="Normalized file extension.", examples=["pdf"])
+    extract_media: bool = Field(
+        description="Whether media extraction was enabled.")
     store_media: bool = Field(description="Whether media was stored in S3.")
     content_versions: list[ContentVersionItem] = Field(
         description="All content versions for this upload."
@@ -28,12 +35,15 @@ class UploadRecord(BaseModel):
 
 
 class UploadVersionsResponse(BaseModel):
+    """Response listing all content versions for an upload."""
     upload_id: str = Field(description="Upload record ID.")
-    versions: list[ContentVersionItem] = Field(description="All content versions.")
+    versions: list[ContentVersionItem] = Field(
+        description="All content versions.")
     total: int = Field(description="Total number of versions.")
 
 
 class DeleteUploadResponse(BaseModel):
+    """Response confirming deletion of an upload and its resources."""
     upload_id: str = Field(description="Deleted upload record ID.")
     deleted_content_records: int = Field(
         description="Number of content records deleted from MongoDB."
@@ -43,6 +53,7 @@ class DeleteUploadResponse(BaseModel):
 
 
 class MediaListResponse(BaseModel):
+    """Response listing media items for a given content record."""
     content_id: str = Field(description="Content record ID.")
     version: int = Field(description="Content version number.")
     total: int = Field(description="Total number of media items found.")
@@ -52,11 +63,13 @@ class MediaListResponse(BaseModel):
 
 
 class ExtractFromUrlRequest(BaseModel):
+    """Request body for the extract-from-URL endpoint."""
     url: str = Field(
         description="HTTP/HTTPS URL of the document to fetch and extract.",
         examples=["https://example.com/report.pdf"],
     )
-    user_id: str = Field(description="Caller/user identifier.", examples=["user-123"])
+    user_id: str = Field(
+        description="Caller/user identifier.", examples=["user-123"])
     extract_media: bool = Field(
         default=True, description="Whether to extract media."
     )
@@ -66,6 +79,7 @@ class ExtractFromUrlRequest(BaseModel):
 
 
 class ReprocessRequest(BaseModel):
+    """Request body for the reprocess endpoint."""
     extract_media: bool = Field(
         default=True, description="Override extract_media flag for reprocessing."
     )
@@ -75,6 +89,7 @@ class ReprocessRequest(BaseModel):
 
 
 class ReprocessResponse(BaseModel):
+    """Response confirming successful reprocessing of an upload."""
     upload_id: str = Field(description="Upload record ID.")
     content_id: str = Field(description="Newly created content record ID.")
     version: int = Field(description="New version number assigned.")
@@ -84,7 +99,9 @@ class ReprocessResponse(BaseModel):
 
 
 class UploadsListResponse(BaseModel):
+    """Paginated list of upload records."""
     items: list[UploadRecord] = Field(description="Page of upload records.")
-    total: int = Field(description="Total matching records (before pagination).")
+    total: int = Field(
+        description="Total matching records (before pagination).")
     limit: int = Field(description="Page size used.")
     offset: int = Field(description="Offset used.")

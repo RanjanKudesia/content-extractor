@@ -1,3 +1,4 @@
+"""MongoDB configuration loader for the Content Extractor service."""
 import logging
 import os
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class MongoDbConfig:
+    """Immutable configuration for the MongoDB client."""
     mongo_uri: str
     database_name: str
     uploads_collection_name: str
@@ -18,6 +20,7 @@ class MongoDbConfig:
 
 
 def load_mongodb_config() -> MongoDbConfig:
+    """Load MongoDB configuration from environment variables (.env file)."""
     base_dir = Path(__file__).resolve().parents[2]
     load_dotenv(base_dir / ".env")
     logger.debug("Loaded environment for MongoDB config",

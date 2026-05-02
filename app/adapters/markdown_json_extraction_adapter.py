@@ -9,6 +9,8 @@ logger = logging.getLogger(__name__)
 
 
 class MarkdownJsonExtractionAdapter:
+    """Adapter that extracts structured JSON data from Markdown files."""
+
     def __init__(self) -> None:
         self.pipeline = MarkdownExtractionPipeline()
 
@@ -18,6 +20,7 @@ class MarkdownJsonExtractionAdapter:
         output_basename: str,
         include_media: bool = True,
     ) -> tuple[dict[str, Any], str]:
+        """Run Markdown extraction and return (data_dict, virtual_path)."""
         logger.debug(
             "Starting Markdown extraction adapter run",
             extra={

@@ -1,3 +1,5 @@
+"""DOCX XML extraction adapter — parses raw Word XML from a DOCX zip archive."""
+# pylint: disable=c-extension-no-member
 import base64
 import logging
 from io import BytesIO
@@ -5,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from zipfile import ZipFile, is_zipfile
 
-from lxml import etree
+from lxml import etree  # pylint: disable=c-extension-no-member
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -20,7 +22,10 @@ logger = logging.getLogger(__name__)
 
 
 class DocxXmlExtractionAdapter:
+    """Extract rich, XML-centric structured data from a DOCX archive."""
+
     def run(self, file_bytes: bytes, output_basename: str) -> tuple[dict[str, Any], str]:
+        """Run DOCX XML extraction and return (data_dict, virtual_path)."""
         logger.info(
             "Starting DOCX XML extraction",
             extra={"output_basename": output_basename,

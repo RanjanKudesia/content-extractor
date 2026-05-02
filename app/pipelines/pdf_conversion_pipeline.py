@@ -1,3 +1,4 @@
+"""PDF conversion pipeline — converts PDF via pdf2docx then extracts to JSON."""
 import logging
 from pathlib import Path
 import tempfile
@@ -9,6 +10,8 @@ from app.pipelines.docx_extraction_pipeline import DocxExtractionPipeline
 
 
 class PdfConversionPipeline:
+    """Convert a PDF to DOCX using pdf2docx, then extract structured JSON."""
+
     def __init__(self) -> None:
         self.logger = logging.getLogger(__name__)
         self.docx_pipeline = DocxExtractionPipeline()

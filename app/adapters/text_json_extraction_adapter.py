@@ -9,6 +9,8 @@ logger = logging.getLogger(__name__)
 
 
 class TextJsonExtractionAdapter:
+    """Adapter that extracts structured JSON data from plain-text files."""
+
     def __init__(self) -> None:
         self.pipeline = TextExtractionPipeline()
 
@@ -18,6 +20,7 @@ class TextJsonExtractionAdapter:
         output_basename: str,
         include_media: bool = True,
     ) -> tuple[dict[str, Any], str]:
+        """Run plain-text extraction and return (data_dict, virtual_path)."""
         logger.debug(
             "Starting TXT extraction adapter run",
             extra={

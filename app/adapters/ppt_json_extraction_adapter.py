@@ -9,6 +9,8 @@ logger = logging.getLogger(__name__)
 
 
 class PptJsonExtractionAdapter:
+    """Adapter that extracts structured JSON data from PowerPoint files."""
+
     def __init__(self, pipeline: PptExtractionPipeline | None = None) -> None:
         self.pipeline = pipeline or PptExtractionPipeline()
 
@@ -18,6 +20,7 @@ class PptJsonExtractionAdapter:
         output_basename: str,
         include_media: bool = True,
     ) -> tuple[dict[str, Any], str]:
+        """Run PowerPoint extraction and return (data_dict, virtual_path)."""
         logger.debug(
             "Starting PPT extraction adapter run",
             extra={

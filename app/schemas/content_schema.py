@@ -1,9 +1,11 @@
+"""Pydantic schemas for content retrieval responses."""
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 
 class ContentResponse(BaseModel):
+    """Response returned when fetching a stored content record."""
     content_id: str = Field(
         description="MongoDB content record ID.",
         examples=["69f64331423c9bfe1bf883a1"],

@@ -1,3 +1,4 @@
+"""File upload controller for the Content Extractor service."""
 import base64
 import hashlib
 import json
@@ -68,6 +69,7 @@ class _MediaUploader:
         return key
 
     def resolve_local_path(self, local_file_path: str | None) -> Path | None:
+        """Resolve a local file path relative to the extraction base directory."""
         if not local_file_path:
             return None
         path = Path(local_file_path)
@@ -165,6 +167,7 @@ class _MediaBase64Inliner:
         self._cache: dict[str, str] = {}
 
     def resolve_local_path(self, local_file_path: str | None) -> Path | None:
+        """Resolve a local file path relative to the extraction base directory."""
         if not local_file_path:
             return None
         path = Path(local_file_path)
@@ -172,6 +175,7 @@ class _MediaBase64Inliner:
         return candidate if candidate.exists() and candidate.is_file() else None
 
     def walk(self, node: object) -> object:
+        """Recursively ensure media in *node* is inlined as base64."""
         if isinstance(node, dict):
             return self._walk_dict(node)
         if isinstance(node, list):
@@ -179,6 +183,7 @@ class _MediaBase64Inliner:
         return node
 
     def _walk_dict(self, node: dict) -> dict:
+        """Inline base64 media into *node* when no inline data is already present."""
         if not self._has_inline_base64(node):
             self._inline_local_file(node)
 
@@ -188,9 +193,14 @@ class _MediaBase64Inliner:
 
     @staticmethod
     def _has_inline_base64(node: dict) -> bool:
-        return any(isinstance(node.get(field), str) and node.get(field) for field in ("base64", "base64_data"))
+        """Return True when *node* already contains an inline base64 media field."""
+        return any(
+            isinstance(node.get(field), str) and node.get(field)
+            for field in ("base64", "base64_data")
+        )
 
     def _inline_local_file(self, node: dict) -> None:
+        """Inline a local media file into *node* as base64 when not already present."""
         raw_path = node.get("local_file_path")
         lpath = self.resolve_local_path(
             raw_path if isinstance(raw_path, str) else None)
@@ -423,14 +433,16 @@ class FileUploadController:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Filename contains unsupported characters.",
             )
-        _EXT_ALIASES = self._EXT_ALIASES
+        _EXT_ALIASES = self._EXT_ALIASES  # pylint: disable=invalid-name
         normalized_extension = _EXT_ALIASES.get(extension, extension)
 
         stored_filename = f"{uuid.uuid4()}.{normalized_extension}"
         basename = Path(stored_filename).stem
-
         extracted_data = self._run_extraction(
-            file_bytes, normalized_extension, basename, extract_media=extract_media
+            file_bytes,
+            normalized_extension,
+            basename,
+            extract_media=extract_media,
         )
 
         extraction_folder = basename
@@ -712,7 +724,7 @@ class FileUploadController:
                 detail="File size must be less than 20 MB.",
             )
 
-        _EXT_ALIASES = self._EXT_ALIASES
+        _EXT_ALIASES = self._EXT_ALIASES  # pylint: disable=invalid-name
         normalized_extension = _EXT_ALIASES.get(extension, extension)
         self.logger.debug(
             "Upload validation successful",
@@ -838,7 +850,9 @@ class FileUploadController:
             data_s3_key=data_s3_key,
         )
 
-    def _upload_extracted_payload_to_s3(self, *, stored_filename: str, rewritten_payload: dict) -> str:
+    def _upload_extracted_payload_to_s3(
+        self, *, stored_filename: str, rewritten_payload: dict
+    ) -> str:
         """Upload extracted JSON payload to S3 and return its key."""
         json_bytes = json.dumps(rewritten_payload, default=str).encode("utf-8")
         basename = Path(stored_filename).stem

@@ -1,6 +1,5 @@
 """DOCX extraction pipeline that produces structured JSON output."""
-
-# pylint: disable=line-too-long,too-many-lines
+# pylint: disable=line-too-long,too-many-lines,c-extension-no-member
 
 import base64
 import json
@@ -254,7 +253,7 @@ class DocxExtractionPipeline:
 
         return defaults
 
-    def _extract_theme_data(  # NOSONAR - XML theme parsing requires branching for optional nodes
+    def _extract_theme_data(  # NOSONAR  # pylint: disable=too-many-branches
         self,
         document: DocumentObject,
     ) -> dict[str, dict[str, str]]:

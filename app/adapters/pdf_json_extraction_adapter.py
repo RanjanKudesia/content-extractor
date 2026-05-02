@@ -9,6 +9,8 @@ logger = logging.getLogger(__name__)
 
 
 class PdfJsonExtractionAdapter:
+    """Adapter that extracts structured JSON data from PDF files."""
+
     def __init__(self, pipeline: PdfExtractionPipeline | None = None) -> None:
         self.pipeline = pipeline or PdfExtractionPipeline()
 
@@ -18,6 +20,7 @@ class PdfJsonExtractionAdapter:
         output_basename: str,
         include_media: bool = True,
     ) -> tuple[dict[str, Any], str]:
+        """Run PDF extraction and return (data_dict, virtual_path)."""
         logger.debug(
             "Starting PDF extraction adapter run",
             extra={

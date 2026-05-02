@@ -1,3 +1,4 @@
+"""Extraction pipelines package."""
 from app.pipelines.docx_extraction_pipeline import DocxExtractionPipeline
 from app.pipelines.html_extraction_pipeline import HtmlExtractionPipeline
 from app.pipelines.markdown_extraction_pipeline import MarkdownExtractionPipeline

@@ -1,3 +1,5 @@
+"""PPT XML extraction pipeline — extracts rich XML-centric data from PPTX archives."""
+# pylint: disable=c-extension-no-member
 import base64
 import logging
 from io import BytesIO
@@ -5,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from zipfile import ZipFile, is_zipfile
 
-from lxml import etree
+from lxml import etree  # pylint: disable=c-extension-no-member,no-member
 
 P_NS = "http://schemas.openxmlformats.org/presentationml/2006/main"
 A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
@@ -85,6 +87,7 @@ class PptXmlExtractionPipeline:
     """
 
     def run(self, file_bytes: bytes, output_basename: str) -> tuple[dict[str, Any], str]:
+        """Run PPT XML extraction and return (data_dict, virtual_path)."""
         logger.info(
             "Starting PPT XML extraction",
             extra={"output_basename": output_basename,

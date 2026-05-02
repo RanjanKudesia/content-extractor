@@ -1,3 +1,4 @@
+"""Health controller for the Content Extractor service."""
 import logging
 
 from app.pipelines.health_pipeline import HealthPipeline
@@ -8,10 +9,13 @@ logger = logging.getLogger(__name__)
 
 
 class HealthController:
+    """Orchestrates the health check pipeline and returns a HealthResponse."""
+
     def __init__(self, pipeline: HealthPipeline) -> None:
         self.pipeline = pipeline
 
     def execute(self) -> HealthResponse:
+        """Run the health pipeline and return the service health status."""
         logger.debug("Executing health controller")
         result = self.pipeline.run()
         logger.debug("Health controller completed", extra={

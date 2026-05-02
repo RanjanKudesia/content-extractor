@@ -22,7 +22,7 @@ class _RunCollector:
 
     def push_text(self, text: str, style: dict[str, Any]) -> None:
         """Append or merge a text run."""
-        from app.pipelines.html._tag_style import _normalize_text
+        from app.pipelines.html._tag_style import _normalize_text  # pylint: disable=import-outside-toplevel
         normalized = "\n" if text == "\n" else _normalize_text(text)
         if not normalized:
             return
@@ -54,7 +54,7 @@ class _RunCollector:
             run["index"] = len(self.runs)
             self.runs.append(run)
 
-    def collect(self, node: Any, style: dict[str, Any]) -> None:
+    def collect(self, node: Any, style: dict[str, Any]) -> None:  # NOSONAR
         """Recursively walk a node tree and accumulate runs."""
         if isinstance(node, NavigableString):
             self.push_text(str(node), style)

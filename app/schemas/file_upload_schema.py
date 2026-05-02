@@ -1,9 +1,11 @@
+"""Response schemas for the file-upload endpoint."""
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 
 class FileUploadResponse(BaseModel):
+    """Response returned after a successful file upload and extraction."""
     upload_id: str = Field(
         description="MongoDB upload record ID for this upload operation.",
         examples=["69f6432f423c9bfe1bf883a0"],
@@ -33,11 +35,15 @@ class FileUploadResponse(BaseModel):
         examples=[True],
     )
     store_media: bool = Field(
-        description="Echo of request flag indicating whether media was stored in S3 instead of inline base64.",
+        description=(
+            "Echo of request flag indicating whether media was stored in S3 "
+            "instead of inline base64."
+        ),
         examples=[True],
     )
     content_versions: list[dict[str, Any]] = Field(
-        description="Created content versions for this upload; content_id is used by GET /content and generator service.",
+        description="Created content versions for this upload; "
+        "content_id is used by GET /content and generator service.",
     )
     created_at: str = Field(
         description="ISO-8601 UTC timestamp when upload record was created.",

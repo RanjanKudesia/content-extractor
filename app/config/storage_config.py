@@ -1,3 +1,4 @@
+"""S3 storage configuration loader for the Content Extractor service."""
 import logging
 import os
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class S3StorageConfig:
+    """Immutable configuration for the S3-compatible storage client."""
     bucket_name: str
     endpoint_url: str
     access_key: str
@@ -23,6 +25,7 @@ class S3StorageConfig:
 
 
 def load_s3_storage_config() -> S3StorageConfig:
+    """Load S3 storage configuration from environment variables (.env file)."""
     base_dir = Path(__file__).resolve().parents[2]
     load_dotenv(base_dir / ".env")
     logger.debug("Loaded environment for S3 config",

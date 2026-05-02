@@ -1,3 +1,4 @@
+"""MongoDB storage adapter for the content-extractor service."""
 from datetime import datetime, timezone
 import logging
 from typing import Any
@@ -18,10 +19,12 @@ _INVALID_UPLOAD_ID_MSG = "Invalid upload_id format."
 
 
 class MongoStorageError(RuntimeError):
-    pass
+    """Raised when a MongoDB operation fails."""
 
 
 class MongoDbStorageAdapter:
+    """Adapter for persisting upload and content records to MongoDB."""
+
     def __init__(self, config: MongoDbConfig | None = None) -> None:
         self.logger = logging.getLogger(__name__)
         self.config = config or load_mongodb_config()
@@ -43,8 +46,8 @@ class MongoDbStorageAdapter:
         )
 
     def ensure_indexes(self) -> None:
-        """Create indexes required for efficient querying. Safe to call multiple times (idempotent)."""
-        from pymongo import ASCENDING, DESCENDING
+        """Create indexes for efficient querying. Safe to call multiple times (idempotent)."""
+        from pymongo import ASCENDING, DESCENDING  # pylint: disable=import-outside-toplevel
 
         self.uploads_collection.create_index(
             [("user_id", ASCENDING), ("created_at", DESCENDING)],
@@ -224,6 +227,7 @@ class MongoDbStorageAdapter:
         return any(hint in message for hint in hints)
 
     def get_content(self, content_id: str, version: int) -> dict[str, Any] | None:
+        """Return a content record by ID and version, or None if not found."""
         try:
             object_id = ObjectId(content_id)
         except Exception as e:  # ObjectId throws TypeError/ValueError for invalid IDs
@@ -278,7 +282,10 @@ class MongoDbStorageAdapter:
         return docs
 
     def delete_upload_bundle(self, upload_id: str) -> tuple[list[str], int]:
-        """Delete upload + all content records. Returns (data_s3_keys_for_cleanup, content_record_count)."""
+        """Delete upload + all content records.
+
+        Returns (data_s3_keys_for_cleanup, content_record_count).
+        """
         try:
             object_id = ObjectId(upload_id)
         except Exception as e:
@@ -406,6 +413,7 @@ class MongoDbStorageAdapter:
             raise MongoStorageError(_MONGO_WRITE_FAILED_MSG) from e
 
     def check_connection(self) -> bool:
+        """Return True if MongoDB is reachable."""
         try:
             self.client.admin.command("ping")
             self.logger.debug("MongoDB connection check succeeded")

@@ -1,8 +1,10 @@
+"""Logging configuration for the Content Extractor service."""
 import logging
 import os
 
 
 def setup_logging() -> None:
+    """Configure root logger level and format from the LOG_LEVEL environment variable."""
     level_name = os.getenv("LOG_LEVEL", "INFO").upper()
     level = getattr(logging, level_name, None)
     if not isinstance(level, int):
