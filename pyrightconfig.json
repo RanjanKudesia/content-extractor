@@ -3,6 +3,9 @@
         "app",
         "tests"
     ],
+    "pythonVersion": "3.13",
+    "typeCheckingMode": "strict",
+    "reportMissingTypeStubs": false,
     "executionEnvironments": [
         {
             "root": ".",

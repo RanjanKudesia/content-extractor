@@ -6,7 +6,10 @@ pymongo
 python-dotenv
 beautifulsoup4
 lxml
+lxml-stubs
 python-docx
 python-multipart
 pdf2docx
 pdfplumber
+tinycss2
+cssselect

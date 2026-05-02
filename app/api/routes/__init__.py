@@ -13,6 +13,7 @@ from app.adapters.html_json_extraction_adapter import HtmlJsonExtractionAdapter
 from app.adapters.markdown_json_extraction_adapter import MarkdownJsonExtractionAdapter
 from app.adapters.mongodb_storage_adapter import MongoStorageError
 from app.adapters.mongodb_storage_adapter import MongoDbStorageAdapter
+from app.adapters.pdf_json_extraction_adapter import PdfJsonExtractionAdapter
 from app.adapters.ppt_json_extraction_adapter import PptJsonExtractionAdapter
 from app.adapters.s3_storage_adapter import S3StorageAdapter
 from app.adapters.text_json_extraction_adapter import TextJsonExtractionAdapter
@@ -21,7 +22,8 @@ from app.controllers.file_upload_controller import FileUploadController
 from app.controllers.health_controller import HealthController
 from app.pipelines.docx_extraction_pipeline import DocxExtractionPipeline
 from app.pipelines.health_pipeline import HealthPipeline
-from app.pipelines.pdf_conversion_pipeline import PdfConversionPipeline
+from app.pipelines.pdf_extraction_pipeline import PdfExtractionPipeline
+from app.pipelines.ppt_extraction_pipeline import PptExtractionPipeline
 from app.pipelines.ppt_xml_extraction_pipeline import PptXmlExtractionPipeline
 from app.schemas.content_schema import ContentResponse
 from app.schemas.file_upload_schema import FileUploadResponse
@@ -79,6 +81,7 @@ def create_file_upload_controller() -> FileUploadController:
     try:
         logger.info("Initializing file upload controller")
         s3_adapter, mongo_adapter = get_storage_adapters()
+        ppt_xml_pipeline = PptXmlExtractionPipeline()
         return FileUploadController(
             docx_json_adapter=DocxJsonExtractionAdapter(
                 DocxExtractionPipeline()),
@@ -86,10 +89,9 @@ def create_file_upload_controller() -> FileUploadController:
             html_json_adapter=HtmlJsonExtractionAdapter(),
             markdown_json_adapter=MarkdownJsonExtractionAdapter(),
             text_json_adapter=TextJsonExtractionAdapter(),
-            ppt_json_adapter=PptJsonExtractionAdapter(
-                PptXmlExtractionPipeline()),
-            ppt_xml_pipeline=PptXmlExtractionPipeline(),
-            pdf_pipeline=PdfConversionPipeline(),
+            ppt_json_adapter=PptJsonExtractionAdapter(PptExtractionPipeline()),
+            ppt_xml_pipeline=ppt_xml_pipeline,
+            pdf_json_adapter=PdfJsonExtractionAdapter(PdfExtractionPipeline()),
             s3_adapter=s3_adapter,
             mongo_adapter=mongo_adapter,
         )
@@ -120,7 +122,7 @@ def create_file_upload_controller() -> FileUploadController:
         "- final extraction payload (json/xml structure) is persisted in MongoDB.\n"
         "- response includes MongoDB record id and output file path.\n\n"
         "Notes:\n"
-        "- pdf extraction uses the service's default pdf-to-docx flow before extraction.\n"
+        "- PDF extraction uses native PyMuPDF + pdfplumber. Scanned/image-only PDFs automatically fall back to pdf2docx conversion.\n"
         "- output_format defaults to json."
     ),
 )

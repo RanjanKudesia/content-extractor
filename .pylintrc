@@ -1,5 +1,6 @@
 [MASTER]
-extension-pkg-allow-list=lxml
+extension-pkg-allow-list=lxml,fitz
+init-hook="import sys; sys.path.insert(0, '.')"
 
 [MESSAGES CONTROL]
 disable=

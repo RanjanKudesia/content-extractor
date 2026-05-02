@@ -18,6 +18,58 @@ NS = {
 }
 
 
+def _detect_column_layout(shapes: list[dict]) -> dict[str, Any]:
+    """Detect multi-column layout from text-shape bounding boxes.
+
+    Returns a dict with:
+      - column_count (int): estimated number of columns (1 if single-column)
+      - column_x_ranges (list of [x_min, x_max] pairs, one per column, in EMUs)
+    """
+    # Only consider text-bearing shapes that have position info.
+    text_shapes = [
+        s for s in shapes
+        if s.get("kind") in {"shape"} and s.get("position") is not None
+        and (s.get("text") or "").strip()
+    ]
+    if len(text_shapes) < 2:
+        return {"column_count": 1, "column_x_ranges": []}
+
+    xs = sorted({s["position"]["x"] for s in text_shapes})
+    if not xs:
+        return {"column_count": 1, "column_x_ranges": []}
+
+    # Gap threshold: 15 % of the x range covered by all shapes.
+    x_span = xs[-1] - xs[0]
+    if x_span <= 0:
+        return {"column_count": 1, "column_x_ranges": []}
+
+    threshold = x_span * 0.15
+
+    # Cluster x-positions by proximity.
+    clusters: list[list[int]] = [[xs[0]]]
+    for x in xs[1:]:
+        if x - clusters[-1][-1] > threshold:
+            clusters.append([x])
+        else:
+            clusters[-1].append(x)
+
+    # Build per-column x-ranges (min x … max x+cx for shapes in that cluster).
+    column_ranges: list[list[int]] = []
+    for cluster in clusters:
+        cluster_set = set(cluster)
+        cluster_shapes = [
+            s for s in text_shapes if s["position"]["x"] in cluster_set]
+        min_x = min(s["position"]["x"] for s in cluster_shapes)
+        max_x = max(s["position"]["x"] + s["position"]["cx"]
+                    for s in cluster_shapes)
+        column_ranges.append([min_x, max_x])
+
+    return {
+        "column_count": len(clusters),
+        "column_x_ranges": column_ranges,
+    }
+
+
 class PptXmlExtractionPipeline:
     """Extract rich, XML-centric structured data from a PPTX archive.
 
@@ -352,6 +404,7 @@ class PptXmlExtractionPipeline:
             "shape_count": len(shapes),
             "image_count": image_count,
             "table_count": table_count,
+            "column_layout": _detect_column_layout(shapes),
             "shapes": shapes,
             "notes": notes,
         }
@@ -372,6 +425,8 @@ class PptXmlExtractionPipeline:
             if para["text"]:
                 text_chunks.append(para["text"])
 
+        position = self._extract_shape_position(sp_el)
+
         return {
             "shape_id": shape_id,
             "name": shape_name,
@@ -382,7 +437,26 @@ class PptXmlExtractionPipeline:
             "is_title": bool(ph is not None and (ph.get("type") in {"title", "ctrTitle"})),
             "text": "\n".join(text_chunks),
             "paragraphs": paragraphs,
+            "position": position,
         }
+
+    def _extract_shape_position(self, sp_el) -> dict[str, Any] | None:
+        """Extract shape bounding box from <p:spPr><a:xfrm> in EMUs."""
+        xfrm = sp_el.find("p:spPr/a:xfrm", NS)
+        if xfrm is None:
+            return None
+        off = xfrm.find("a:off", NS)
+        ext = xfrm.find("a:ext", NS)
+        if off is None or ext is None:
+            return None
+        try:
+            x = int(off.get("x", 0))
+            y = int(off.get("y", 0))
+            cx = int(ext.get("cx", 0))
+            cy = int(ext.get("cy", 0))
+            return {"x": x, "y": y, "cx": cx, "cy": cy}
+        except (ValueError, TypeError):
+            return None
 
     def _extract_text_paragraph(self, p_el) -> dict[str, Any]:
         runs: list[dict[str, Any]] = []

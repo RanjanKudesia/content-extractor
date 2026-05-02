@@ -1,8 +1,10 @@
 """DOCX extraction pipeline that produces structured JSON output."""
 
 import base64
+import json
 import logging
 import mimetypes
+import time
 from io import BytesIO
 from typing import Any
 from zipfile import is_zipfile
@@ -22,6 +24,8 @@ XML_NS = {
     "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
 }
 
+_W_VAL = "w:val"
+
 
 class DocxExtractionPipeline:
     """Extract paragraphs, tables, styles, numbering, and media from DOCX files."""
@@ -31,6 +35,14 @@ class DocxExtractionPipeline:
 
     def run(self, file_bytes: bytes, output_basename: str) -> tuple[dict[str, Any], str]:
         """Parse a DOCX byte stream and persist the extracted JSON payload."""
+        t0 = time.perf_counter()
+        file_size_bytes = len(file_bytes)
+        self.logger.info(
+            "DOCX extraction started",
+            extra={"output_basename": output_basename,
+                   "file_size_bytes": file_size_bytes},
+        )
+
         if not is_zipfile(BytesIO(file_bytes)):
             raise ValueError(
                 "Invalid DOCX file: not a valid ZIP archive. File may be corrupted.")
@@ -41,7 +53,38 @@ class DocxExtractionPipeline:
             raise ValueError(
                 f"Failed to parse DOCX document: {str(e)}") from e
 
+        self.logger.info(
+            "DOCX document structure",
+            extra={
+                "paragraphs": len(document.paragraphs),
+                "tables": len(document.tables),
+                "sections": len(document.sections),
+                "styles": len(document.styles),
+                "inline_shapes": len(document.inline_shapes),
+            },
+        )
+
         extracted = self._extract_document(document, output_basename)
+
+        elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
+        try:
+            response_size_bytes = len(json.dumps(extracted).encode("utf-8"))
+        except TypeError:
+            response_size_bytes = 0
+
+        self.logger.info(
+            "DOCX extraction completed",
+            extra={
+                "elapsed_ms": elapsed_ms,
+                "elapsed_s": round(elapsed_ms / 1000, 3),
+                "response_size_bytes": response_size_bytes,
+                "response_size_kb": round(response_size_bytes / 1024, 2),
+                "paragraph_count": len(extracted.get("paragraphs", [])),
+                "table_count": len(extracted.get("tables", [])),
+                "media_count": len(extracted.get("media", [])),
+            },
+        )
+
         return extracted, f"virtual://extracted/{output_basename}.json"
 
     def _extract_document(self, document: DocumentObject, output_basename: str) -> dict[str, Any]:
@@ -126,6 +169,8 @@ class DocxExtractionPipeline:
             "styles": self._extract_styles(document),
             "numbering": self._extract_numbering(document),
             "sections": sections,
+            "bookmarks": self._extract_bookmarks(document),
+            "comments": self._extract_comments(document),
             "media": list(media_index.values()),
             "paragraphs": paragraphs,
             "tables": tables,
@@ -257,6 +302,62 @@ class DocxExtractionPipeline:
                 "Failed to extract theme data", extra={"error": str(e)})
 
         return {"fonts": theme_fonts, "colors": theme_colors}
+
+    def _extract_bookmarks(self, document: DocumentObject) -> list[dict[str, Any]]:
+        """Return all named bookmarks defined in the document body."""
+        bookmarks: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        try:
+            body = document.element.body
+            for elem in body.iter(qn("w:bookmarkStart")):
+                bm_id = elem.get(qn("w:id"))
+                bm_name = elem.get(qn("w:name")) or ""
+                # Skip internal Word bookmarks (e.g. "_GoBack") and duplicates.
+                if bm_id in seen_ids:
+                    continue
+                seen_ids.add(bm_id)
+                bookmarks.append({"id": bm_id, "name": bm_name})
+        except Exception:
+            pass
+        return bookmarks
+
+    def _extract_comments(self, document: DocumentObject) -> list[dict[str, Any]]:
+        """Extract inline comments from word/comments.xml if present."""
+        comments: list[dict[str, Any]] = []
+        try:
+            from lxml import etree as _etree
+            comments_part = None
+            for rel in document.part.rels.values():
+                if rel.reltype.endswith("/comments"):
+                    comments_part = rel.target_part
+                    break
+            if comments_part is None:
+                return comments
+            root = _etree.fromstring(comments_part.blob)
+            ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+            for comment_elem in root.findall("w:comment", ns):
+                cid = comment_elem.get(
+                    "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}id")
+                author = comment_elem.get(
+                    "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}author") or ""
+                date_str = comment_elem.get(
+                    "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}date") or ""
+                # Collect text from all <w:t> children.
+                texts = [
+                    t.text or ""
+                    for t in comment_elem.iter(
+                        "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t"
+                    )
+                ]
+                comments.append({
+                    "id": cid,
+                    "author": author,
+                    "date": date_str,
+                    "text": "".join(texts).strip(),
+                })
+        except Exception:
+            pass
+        return comments
 
     def _extract_and_save_media(self, document: DocumentObject, output_basename: str) -> dict[str, dict[str, Any]]:
         media_index: dict[str, dict[str, Any]] = {}
@@ -447,7 +548,64 @@ class DocxExtractionPipeline:
             "text": cell.text,
             "paragraphs": paragraphs,
             "tables": tables,
+            "colspan": self._cell_colspan(cell),
+            "rowspan": self._cell_rowspan(cell),
         }
+
+    def _cell_colspan(self, cell: _Cell) -> int:
+        """Return the number of columns this cell spans (w:gridSpan), default 1."""
+        try:
+            tc_pr = self._element_of(cell).find(qn("w:tcPr"))
+            if tc_pr is not None:
+                grid_span = tc_pr.find(qn("w:gridSpan"))
+                if grid_span is not None:
+                    val = grid_span.get(qn("w:val"))
+                    if val is not None:
+                        return max(1, int(val))
+        except (AttributeError, ValueError, TypeError):
+            pass
+        return 1
+
+    def _cell_rowspan(self, cell: _Cell) -> int:
+        """Detect whether this cell is the start of a vertical merge (rowspan).
+        Returns the span count by walking sibling rows, default 1."""
+        try:
+            tc_pr = self._element_of(cell).find(qn("w:tcPr"))
+            if tc_pr is None:
+                return 1
+            v_merge = tc_pr.find(qn("w:vMerge"))
+            if v_merge is None:
+                return 1
+            # A cell with <w:vMerge> (no val or val!="restart") is a continuation.
+            val = v_merge.get(qn("w:val"))
+            if val != "restart":
+                return 1
+            # This is the start of a merge — count continuation cells below.
+            tr = self._element_of(cell).getparent()
+            tbl = tr.getparent() if tr is not None else None
+            if tbl is None:
+                return 1
+            cell_col = list(tr).index(self._element_of(cell))
+            rows = list(tbl.findall(qn("w:tr")))
+            start_row = rows.index(tr)
+            count = 1
+            for sibling_tr in rows[start_row + 1:]:
+                tc_list = sibling_tr.findall(qn("w:tc"))
+                if cell_col >= len(tc_list):
+                    break
+                sib_tc_pr = tc_list[cell_col].find(qn("w:tcPr"))
+                if sib_tc_pr is None:
+                    break
+                sib_v_merge = sib_tc_pr.find(qn("w:vMerge"))
+                if sib_v_merge is None:
+                    break
+                sib_val = sib_v_merge.get(qn("w:val"))
+                if sib_val == "restart":
+                    break
+                count += 1
+            return count
+        except (AttributeError, ValueError, TypeError, IndexError):
+            return 1
 
     def _extract_paragraph(
         self,
@@ -470,9 +628,20 @@ class DocxExtractionPipeline:
                 "level": int(ilvl) if ilvl is not None else None,
             }
 
+        # Tentative flags — will be refined after numbering format resolution below.
         is_bullet = bool(
             style_name and "bullet" in style_name.lower()) or list_info is not None
         is_numbered = bool(style_name and "number" in style_name.lower())
+
+        # Detect paragraph text direction from <w:bidi/> or <w:jc> hints.
+        direction: str | None = None
+        if p_pr is not None:
+            bidi_elem = p_pr.find(qn("w:bidi"))
+            if bidi_elem is not None:
+                bidi_val = bidi_elem.get(qn("w:val"))
+                # <w:bidi/> present with no val, or val != "0", means RTL.
+                if bidi_val is None or bidi_val != "0":
+                    direction = "rtl"
 
         tab_stops = []
         for tab in paragraph.paragraph_format.tab_stops:
@@ -494,6 +663,7 @@ class DocxExtractionPipeline:
             "is_numbered": is_numbered,
             "list_info": list_info,
             "numbering_format": None,
+            "direction": direction,
             "left_indent_pt": paragraph.paragraph_format.left_indent.pt if paragraph.paragraph_format.left_indent else None,
             "right_indent_pt": paragraph.paragraph_format.right_indent.pt if paragraph.paragraph_format.right_indent else None,
             "first_line_indent_pt": paragraph.paragraph_format.first_line_indent.pt
@@ -517,6 +687,20 @@ class DocxExtractionPipeline:
         # Resolve numbering format if document is available and paragraph has list info
         if document is not None and return_data.get("list_info"):
             self._resolve_list_formatting(return_data, document)
+
+        # Refine is_bullet / is_numbered based on the resolved abstract numFmt.
+        fmt_raw = (return_data.get("numbering_format")
+                   or "").split(":")[0].strip().lower()
+        if fmt_raw == "bullet":
+            return_data["is_bullet"] = True
+            return_data["is_numbered"] = False
+        elif fmt_raw in {
+            "decimal", "loweralpha", "upperalpha", "lowerroman", "upperroman",
+            "decimalzero", "ordinal", "cardinaltext", "ordinaltext",
+            "hebrew1", "hebrew2", "arabicindic", "hindiconsonants",
+        }:
+            return_data["is_bullet"] = False
+            return_data["is_numbered"] = True
 
         return return_data
 
@@ -613,7 +797,7 @@ class DocxExtractionPipeline:
 
         list_info = paragraph_data["list_info"]
         num_id = list_info.get("num_id")
-        ilvl = list_info.get("level")
+        ilvl = list_info.get("level") or 0
 
         if num_id is None:
             return
@@ -624,35 +808,98 @@ class DocxExtractionPipeline:
                 return
 
             root = numbering_part.element
-            # Find the num element with matching numId
+
+            # Walk: numId → abstractNumId → (optional numStyleLink) → lvl.
             for num in root.findall("w:num", XML_NS):
                 if int(num.get(qn("w:numId")) or -1) == num_id:
+                    # Check lvlOverride first — it may provide a direct numFmt.
+                    override_fmt = self._get_level_override_format(
+                        num, ilvl)
+                    if override_fmt is not None:
+                        paragraph_data["numbering_format"] = override_fmt
+                        if isinstance(paragraph_data.get("list_info"), dict):
+                            paragraph_data["list_info"]["numbering_format"] = override_fmt
+                        return
+
                     abstract_elem = num.find("w:abstractNumId", XML_NS)
                     if abstract_elem is not None:
                         abstract_id = int(abstract_elem.get(qn("w:val")) or -1)
                         if abstract_id >= 0:
-                            paragraph_data["numbering_format"] = self._get_numbering_format(
-                                root, abstract_id, ilvl or 0
+                            resolved = self._get_numbering_format(
+                                root, abstract_id, ilvl, document
                             )
+                            paragraph_data["numbering_format"] = resolved
+                            if isinstance(paragraph_data.get("list_info"), dict):
+                                paragraph_data["list_info"]["numbering_format"] = resolved
                     break
         except (AttributeError, ValueError, TypeError, KeyError) as e:
             self.logger.warning(
                 "Failed to resolve list formatting", extra={"error": str(e)})
 
-    def _get_numbering_format(self, numbering_root: Any, abstract_id: int, level: int) -> str | None:
-        """Extract the numbering format string from the abstract numbering definition."""
+    def _get_level_override_format(self, num_elem: Any, ilvl: int) -> str | None:
+        """Check <w:lvlOverride> children of a <w:num> for an explicit format."""
+        for override in num_elem.findall("w:lvlOverride", XML_NS):
+            if int(override.get(qn("w:ilvl")) or -1) != ilvl:
+                continue
+            lvl = override.find("w:lvl", XML_NS)
+            if lvl is not None:
+                num_fmt = lvl.find("w:numFmt", XML_NS)
+                lvl_text = lvl.find("w:lvlText", XML_NS)
+                if num_fmt is not None and lvl_text is not None:
+                    fmt = num_fmt.get(qn("w:val"))
+                    text = lvl_text.get(qn("w:val"))
+                    return f"{fmt}:{text}"
+        return None
+
+    def _get_numbering_format(
+        self,
+        numbering_root: Any,
+        abstract_id: int,
+        level: int,
+        document: DocumentObject | None = None,
+        _depth: int = 0,
+    ) -> str | None:
+        """Extract numbering format from abstractNum, following numStyleLink chains."""
+        if _depth > 5:  # guard against circular references
+            return None
+
         for abs_num in numbering_root.findall("w:abstractNum", XML_NS):
-            if int(abs_num.get(qn("w:abstractNumId")) or -1) == abstract_id:
-                # Find the level definition for this level
-                for lvl in abs_num.findall("w:lvl", XML_NS):
-                    if int(lvl.get(qn("w:ilvl")) or -1) == level:
-                        # Extract numFmt and lvlText
-                        num_fmt = lvl.find("w:numFmt", XML_NS)
-                        lvl_text = lvl.find("w:lvlText", XML_NS)
-                        if num_fmt is not None and lvl_text is not None:
-                            fmt = num_fmt.get(qn("w:val"))
-                            text = lvl_text.get(qn("w:val"))
-                            return f"{fmt}:{text}"
+            if int(abs_num.get(qn("w:abstractNumId")) or -1) != abstract_id:
+                continue
+
+            # Follow numStyleLink to a named list style if present.
+            style_link = abs_num.find("w:numStyleLink", XML_NS)
+            if style_link is not None and document is not None:
+                linked_style_id = style_link.get(qn("w:val"))
+                linked_abstract_id = self._abstract_id_for_style(
+                    numbering_root, linked_style_id)
+                if linked_abstract_id is not None:
+                    return self._get_numbering_format(
+                        numbering_root, linked_abstract_id, level,
+                        document, _depth + 1,
+                    )
+
+            for lvl in abs_num.findall("w:lvl", XML_NS):
+                if int(lvl.get(qn("w:ilvl")) or -1) != level:
+                    continue
+                num_fmt = lvl.find("w:numFmt", XML_NS)
+                lvl_text = lvl.find("w:lvlText", XML_NS)
+                if num_fmt is not None and lvl_text is not None:
+                    fmt = num_fmt.get(qn("w:val"))
+                    text = lvl_text.get(qn("w:val"))
+                    return f"{fmt}:{text}"
+            break
+        return None
+
+    def _abstract_id_for_style(self, numbering_root: Any, style_id: str | None) -> int | None:
+        """Find the abstractNumId whose styleLink points to the given style name."""
+        if not style_id:
+            return None
+        for abs_num in numbering_root.findall("w:abstractNum", XML_NS):
+            link = abs_num.find("w:styleLink", XML_NS)
+            if link is not None and link.get(qn("w:val")) == style_id:
+                val = abs_num.get(qn("w:abstractNumId"))
+                return int(val) if val is not None else None
         return None
 
     def _resolve_run_font_properties(
