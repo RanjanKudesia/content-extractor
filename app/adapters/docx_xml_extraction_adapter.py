@@ -1,4 +1,5 @@
 import base64
+import logging
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -12,11 +13,21 @@ PR_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
 A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
 WP_NS = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
 XML_NS = {"w": W_NS, "r": R_NS, "a": A_NS, "wp": WP_NS}
+W_COLOR_TAG = "w:color"
+W_RFONTS_TAG = "w:rFonts"
+
+logger = logging.getLogger(__name__)
 
 
 class DocxXmlExtractionAdapter:
     def run(self, file_bytes: bytes, output_basename: str) -> tuple[dict[str, Any], str]:
+        logger.info(
+            "Starting DOCX XML extraction",
+            extra={"output_basename": output_basename,
+                   "size_bytes": len(file_bytes)},
+        )
         if not is_zipfile(BytesIO(file_bytes)):
+            logger.warning("Invalid DOCX payload received (not a ZIP archive)")
             raise ValueError(
                 "Invalid DOCX file: not a valid ZIP archive. File may be corrupted."
             )
@@ -68,6 +79,14 @@ class DocxXmlExtractionAdapter:
             "parts": xml_parts,
         }
 
+        logger.info(
+            "Completed DOCX XML extraction",
+            extra={
+                "xml_part_count": len(xml_parts),
+                "relationship_count": len(relationships),
+                "block_count": len(parsed_body),
+            },
+        )
         return extracted, f"virtual://extracted/{output_basename}.xml.json"
 
     def _extract_document_relationships(self, parts_by_path: dict[str, str]) -> dict[str, str]:
@@ -164,38 +183,11 @@ class DocxXmlExtractionAdapter:
             numbering_map,
         )
 
-        runs: list[dict[str, Any]] = []
-        run_index = 0
-
-        for child in paragraph_el:
-            local = child.tag.rsplit(
-                "}", 1)[-1] if "}" in child.tag else child.tag
-            if local == "r":
-                runs.append(
-                    self._extract_run_block(
-                        child,
-                        run_index,
-                        relationships,
-                        media_bytes_by_path,
-                    )
-                )
-                run_index += 1
-            elif local == "hyperlink":
-                rid = child.get(f"{{{R_NS}}}id")
-                target = relationships.get(rid) if rid else None
-                for hr in child.findall("w:r", XML_NS):
-                    run_data = self._extract_run_block(
-                        hr,
-                        run_index,
-                        relationships,
-                        media_bytes_by_path,
-                    )
-                    run_data["hyperlink_rid"] = rid
-                    run_data["hyperlink_target"] = target
-                    run_data["hyperlink_anchor"] = child.get(
-                        f"{{{W_NS}}}anchor")
-                    runs.append(run_data)
-                    run_index += 1
+        runs = self._extract_runs_from_paragraph(
+            paragraph_el,
+            relationships,
+            media_bytes_by_path,
+        )
 
         text = "".join((run.get("text") or "") for run in runs)
         return {
@@ -209,6 +201,64 @@ class DocxXmlExtractionAdapter:
             "list_format": list_format,
             "runs": runs,
         }
+
+    def _extract_runs_from_paragraph(
+        self,
+        paragraph_el,
+        relationships: dict[str, str],
+        media_bytes_by_path: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        runs: list[dict[str, Any]] = []
+        run_index = 0
+        for child in paragraph_el:
+            local = child.tag.rsplit(
+                "}", 1)[-1] if "}" in child.tag else child.tag
+            if local == "r":
+                runs.append(
+                    self._extract_run_block(
+                        child,
+                        run_index,
+                        relationships,
+                        media_bytes_by_path,
+                    )
+                )
+                run_index += 1
+                continue
+            if local == "hyperlink":
+                run_index = self._append_hyperlink_runs(
+                    hyperlink_el=child,
+                    run_index=run_index,
+                    runs=runs,
+                    relationships=relationships,
+                    media_bytes_by_path=media_bytes_by_path,
+                )
+        return runs
+
+    def _append_hyperlink_runs(
+        self,
+        *,
+        hyperlink_el,
+        run_index: int,
+        runs: list[dict[str, Any]],
+        relationships: dict[str, str],
+        media_bytes_by_path: dict[str, str],
+    ) -> int:
+        rid = hyperlink_el.get(f"{{{R_NS}}}id")
+        target = relationships.get(rid) if rid else None
+        anchor = hyperlink_el.get(f"{{{W_NS}}}anchor")
+        for hr in hyperlink_el.findall("w:r", XML_NS):
+            run_data = self._extract_run_block(
+                hr,
+                run_index,
+                relationships,
+                media_bytes_by_path,
+            )
+            run_data["hyperlink_rid"] = rid
+            run_data["hyperlink_target"] = target
+            run_data["hyperlink_anchor"] = anchor
+            runs.append(run_data)
+            run_index += 1
+        return run_index
 
     def _extract_run_block(
         self,
@@ -226,29 +276,7 @@ class DocxXmlExtractionAdapter:
             elem = rpr.find(f"w:{tag}", XML_NS)
             return True if elem is not None else None
 
-        color = None
-        font_name = None
-        font_size_pt = None
-        if rpr is not None:
-            color_elem = rpr.find("w:color", XML_NS)
-            if color_elem is not None:
-                val = color_elem.get(f"{{{W_NS}}}val")
-                if val and val.lower() != "auto":
-                    color = val.upper()
-
-            fonts_elem = rpr.find("w:rFonts", XML_NS)
-            if fonts_elem is not None:
-                font_name = (
-                    fonts_elem.get(f"{{{W_NS}}}ascii")
-                    or fonts_elem.get(f"{{{W_NS}}}hAnsi")
-                    or fonts_elem.get(f"{{{W_NS}}}cs")
-                )
-
-            size_elem = rpr.find("w:sz", XML_NS)
-            if size_elem is not None:
-                val = size_elem.get(f"{{{W_NS}}}val")
-                if val and val.isdigit():
-                    font_size_pt = int(val) / 2.0
+        color, font_name, font_size_pt = self._extract_run_style_props(rpr)
 
         embedded_media = self._extract_run_media(
             run_el,
@@ -267,6 +295,40 @@ class DocxXmlExtractionAdapter:
             "font_size_pt": font_size_pt,
             "embedded_media": embedded_media,
         }
+
+    def _extract_run_style_props(self, rpr) -> tuple[str | None, str | None, float | None]:
+        if rpr is None:
+            return None, None, None
+
+        color = self._extract_color_value(rpr.find(W_COLOR_TAG, XML_NS))
+        font_name = self._extract_font_name(rpr.find(W_RFONTS_TAG, XML_NS))
+        font_size_pt = self._extract_font_size_pt(rpr.find("w:sz", XML_NS))
+        return color, font_name, font_size_pt
+
+    def _extract_color_value(self, color_elem) -> str | None:
+        if color_elem is None:
+            return None
+        val = color_elem.get(f"{{{W_NS}}}val")
+        if not val or val.lower() == "auto":
+            return None
+        return val.upper()
+
+    def _extract_font_name(self, fonts_elem) -> str | None:
+        if fonts_elem is None:
+            return None
+        return (
+            fonts_elem.get(f"{{{W_NS}}}ascii")
+            or fonts_elem.get(f"{{{W_NS}}}hAnsi")
+            or fonts_elem.get(f"{{{W_NS}}}cs")
+        )
+
+    def _extract_font_size_pt(self, size_elem) -> float | None:
+        if size_elem is None:
+            return None
+        val = size_elem.get(f"{{{W_NS}}}val")
+        if val and val.isdigit():
+            return int(val) / 2.0
+        return None
 
     def _extract_run_text(self, run_el) -> str:
         chunks: list[str] = []
@@ -290,38 +352,51 @@ class DocxXmlExtractionAdapter:
         media_items: list[dict[str, Any]] = []
         for drawing in run_el.findall("w:drawing", XML_NS):
             for blip in drawing.xpath(".//a:blip", namespaces=XML_NS):
-                rid = blip.get(f"{{{R_NS}}}embed")
-                if not rid:
-                    continue
-
-                target = relationships.get(rid)
-                archive_media_path = self._normalize_relationship_target(
-                    target)
-                media_b64 = media_bytes_by_path.get(archive_media_path)
-
-                width_emu = None
-                height_emu = None
-                extent = drawing.find(".//wp:extent", XML_NS)
-                if extent is not None:
-                    cx = extent.get("cx")
-                    cy = extent.get("cy")
-                    if cx and cx.isdigit():
-                        width_emu = int(cx)
-                    if cy and cy.isdigit():
-                        height_emu = int(cy)
-
-                media_items.append(
-                    {
-                        "relationship_id": rid,
-                        "file_name": Path(archive_media_path).name if archive_media_path else None,
-                        "local_file_path": archive_media_path,
-                        "width_emu": width_emu,
-                        "height_emu": height_emu,
-                        "base64_data": media_b64,
-                    }
+                item = self._build_run_media_item(
+                    blip=blip,
+                    drawing=drawing,
+                    relationships=relationships,
+                    media_bytes_by_path=media_bytes_by_path,
                 )
+                if item is not None:
+                    media_items.append(item)
 
         return media_items
+
+    def _build_run_media_item(
+        self,
+        *,
+        blip,
+        drawing,
+        relationships: dict[str, str],
+        media_bytes_by_path: dict[str, str],
+    ) -> dict[str, Any] | None:
+        rid = blip.get(f"{{{R_NS}}}embed")
+        if not rid:
+            return None
+
+        target = relationships.get(rid)
+        archive_media_path = self._normalize_relationship_target(target)
+        width_emu, height_emu = self._extract_drawing_extent(drawing)
+
+        return {
+            "relationship_id": rid,
+            "file_name": Path(archive_media_path).name if archive_media_path else None,
+            "local_file_path": archive_media_path,
+            "width_emu": width_emu,
+            "height_emu": height_emu,
+            "base64_data": media_bytes_by_path.get(archive_media_path),
+        }
+
+    def _extract_drawing_extent(self, drawing) -> tuple[int | None, int | None]:
+        extent = drawing.find(".//wp:extent", XML_NS)
+        if extent is None:
+            return None, None
+        cx = extent.get("cx")
+        cy = extent.get("cy")
+        width_emu = int(cx) if cx and cx.isdigit() else None
+        height_emu = int(cy) if cy and cy.isdigit() else None
+        return width_emu, height_emu
 
     def _normalize_relationship_target(self, target: str | None) -> str | None:
         if not target:
@@ -381,6 +456,10 @@ class DocxXmlExtractionAdapter:
         except (etree.XMLSyntaxError, ValueError, TypeError):
             return {}
 
+        abstract_map = self._build_abstract_numbering_map(root)
+        return self._build_numbering_map(root, abstract_map)
+
+    def _build_abstract_numbering_map(self, root) -> dict[int, dict[int, str]]:
         abstract_map: dict[int, dict[int, str]] = {}
         for abstract in root.findall("w:abstractNum", XML_NS):
             abstract_id_raw = abstract.get(f"{{{W_NS}}}abstractNumId")
@@ -396,26 +475,33 @@ class DocxXmlExtractionAdapter:
                     f"{{{W_NS}}}val") if num_fmt is not None else None
                 if ilvl_raw and ilvl_raw.isdigit() and fmt:
                     level_map[int(ilvl_raw)] = fmt
-
             abstract_map[abstract_id] = level_map
+        return abstract_map
 
+    def _build_numbering_map(
+        self,
+        root,
+        abstract_map: dict[int, dict[int, str]],
+    ) -> dict[tuple[int, int], str]:
         result: dict[tuple[int, int], str] = {}
         for num in root.findall("w:num", XML_NS):
-            num_id_raw = num.get(f"{{{W_NS}}}numId")
-            abs_ref = num.find("w:abstractNumId", XML_NS)
-            abs_id_raw = abs_ref.get(
-                f"{{{W_NS}}}val") if abs_ref is not None else None
-            if not num_id_raw or not abs_id_raw:
+            num_id, abs_id = self._extract_num_and_abs_id(num)
+            if num_id is None or abs_id is None:
                 continue
-            if not num_id_raw.isdigit() or not abs_id_raw.isdigit():
-                continue
-
-            num_id = int(num_id_raw)
-            abs_id = int(abs_id_raw)
             for ilvl, fmt in abstract_map.get(abs_id, {}).items():
                 result[(num_id, ilvl)] = fmt
-
         return result
+
+    def _extract_num_and_abs_id(self, num) -> tuple[int | None, int | None]:
+        num_id_raw = num.get(f"{{{W_NS}}}numId")
+        abs_ref = num.find("w:abstractNumId", XML_NS)
+        abs_id_raw = abs_ref.get(
+            f"{{{W_NS}}}val") if abs_ref is not None else None
+        if not num_id_raw or not abs_id_raw:
+            return None, None
+        if not num_id_raw.isdigit() or not abs_id_raw.isdigit():
+            return None, None
+        return int(num_id_raw), int(abs_id_raw)
 
     def _extract_paragraph_numbering(
         self,
@@ -535,43 +621,27 @@ class DocxXmlExtractionAdapter:
             elem = rpr.find(f"w:{tag}", XML_NS)
             return True if elem is not None else None
 
-        name = None
-        size_pt = None
-        color_rgb = None
-        highlight_color = None
-
-        fonts_elem = rpr.find("w:rFonts", XML_NS)
-        if fonts_elem is not None:
-            name = (
-                fonts_elem.get(f"{{{W_NS}}}ascii")
-                or fonts_elem.get(f"{{{W_NS}}}hAnsi")
-                or fonts_elem.get(f"{{{W_NS}}}cs")
-            )
-
-        size_elem = rpr.find("w:sz", XML_NS)
-        if size_elem is not None:
-            val = size_elem.get(f"{{{W_NS}}}val")
-            if val and val.isdigit():
-                size_pt = int(val) / 2.0
-
-        color_elem = rpr.find("w:color", XML_NS)
-        if color_elem is not None:
-            val = color_elem.get(f"{{{W_NS}}}val")
-            if val and val.lower() != "auto":
-                color_rgb = val.upper()
-
+        name = self._extract_font_name(rpr.find(W_RFONTS_TAG, XML_NS))
+        size_pt = self._extract_font_size_pt(rpr.find("w:sz", XML_NS))
+        color_rgb = self._extract_color_value(rpr.find(W_COLOR_TAG, XML_NS))
         highlight_elem = rpr.find("w:highlight", XML_NS)
-        if highlight_elem is not None:
-            highlight_color = highlight_elem.get(f"{{{W_NS}}}val")
+        highlight_color = (
+            highlight_elem.get(f"{{{W_NS}}}val")
+            if highlight_elem is not None
+            else None
+        )
 
-        if (
-            name is None
-            and size_pt is None
-            and _has("b") is None
-            and _has("i") is None
-            and _has("u") is None
-            and color_rgb is None
-            and highlight_color is None
+        if all(
+            value is None
+            for value in (
+                name,
+                size_pt,
+                _has("b"),
+                _has("i"),
+                _has("u"),
+                color_rgb,
+                highlight_color,
+            )
         ):
             return None
 

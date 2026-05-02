@@ -1,8 +1,12 @@
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -21,6 +25,8 @@ class S3StorageConfig:
 def load_s3_storage_config() -> S3StorageConfig:
     base_dir = Path(__file__).resolve().parents[2]
     load_dotenv(base_dir / ".env")
+    logger.debug("Loaded environment for S3 config",
+                 extra={"base_dir": str(base_dir)})
 
     bucket_name = _required_env("S3_BUCKET_NAME")
     if bucket_name.lower() in {"bucket", "your-bucket-name", "example"}:
@@ -28,7 +34,7 @@ def load_s3_storage_config() -> S3StorageConfig:
             "S3_BUCKET_NAME is using a placeholder value. Set it to your real bucket name."
         )
 
-    return S3StorageConfig(
+    config = S3StorageConfig(
         bucket_name=bucket_name,
         endpoint_url=_required_env("S3_ENDPOINT_URL"),
         access_key=_required_env("S3_ACCESS_KEY_ID"),
@@ -40,6 +46,17 @@ def load_s3_storage_config() -> S3StorageConfig:
         key_prefix=(os.getenv("S3_KEY_PREFIX", "content-extractor")
                     or "content-extractor").strip("/"),
     )
+    logger.info(
+        "S3 config loaded",
+        extra={
+            "bucket_name": config.bucket_name,
+            "endpoint_url": config.endpoint_url,
+            "region": config.region,
+            "addressing_style": config.addressing_style,
+            "key_prefix": config.key_prefix,
+        },
+    )
+    return config
 
 
 def _required_env(key: str) -> str:

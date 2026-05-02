@@ -5,6 +5,22 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+try:
+    import tinycss2
+except ImportError:  # pragma: no cover - optional dependency
+    tinycss2 = None
+
+try:
+    import lxml.html as lhtml
+except ImportError:  # pragma: no cover - optional dependency
+    lhtml = None
+
+try:
+    from cssselect import GenericTranslator, SelectorError
+except ImportError:  # pragma: no cover - optional dependency
+    GenericTranslator = None
+    SelectorError = None
+
 if TYPE_CHECKING:
     from bs4 import BeautifulSoup, Tag
 
@@ -76,22 +92,20 @@ class _CssCascade:
         higher-specificity rules overwrite lower ones.  Inline styles
         (from the element's own @style attribute) are applied last.
         """
-        try:
-            from cssselect import GenericTranslator, SelectorError
-            translator = GenericTranslator()
-        except ImportError:
+        if GenericTranslator is None or lhtml is None:
             return _parse_inline_style(element.get("style") or "")
+
+        translator = GenericTranslator()
 
         merged: dict[str, str] = {}
 
         for _specificity, selector, props in sorted(self._rules, key=lambda r: r[0]):
             try:
                 xpath = translator.css_to_xpath(selector)
-            except (SelectorError, Exception):
+            except SelectorError:
                 continue
             try:
                 # BeautifulSoup doesn't support XPath natively; use lxml.
-                import lxml.html as lhtml
                 doc_html = lhtml.fromstring(str(element.parent or element))
                 matches = doc_html.xpath(xpath)
                 # Convert element to lxml to check match.
@@ -100,7 +114,7 @@ class _CssCascade:
                 el_nodes = doc_html.xpath(el_xpath)
                 if matches and el_nodes:
                     merged.update(props)
-            except Exception:
+            except (TypeError, ValueError, AttributeError):
                 continue
 
         # Inline style always wins.
@@ -116,36 +130,59 @@ class _CssCascade:
     # ------------------------------------------------------------------
 
     def _parse(self, soup: "BeautifulSoup") -> None:
-        try:
-            import tinycss2
-        except ImportError:
+        if tinycss2 is None:
             return
 
         for style_tag in soup.find_all("style"):
             css_text = style_tag.get_text() or ""
-            rules = tinycss2.parse_stylesheet(
-                css_text, skip_comments=True, skip_whitespace=True)
-            for rule in rules:
-                if rule.type != "qualified-rule":
-                    continue
-                selector_text = tinycss2.serialize(rule.prelude).strip()
-                declarations = tinycss2.parse_declaration_list(
-                    rule.content, skip_comments=True, skip_whitespace=True)
-                props: dict[str, str] = {}
-                for decl in declarations:
-                    if decl.type != "declaration":
-                        continue
-                    name = decl.name.lower()
-                    value = tinycss2.serialize(decl.value).strip()
-                    props[name] = value
-                if not props:
-                    continue
-                for selector in selector_text.split(","):
-                    selector = selector.strip()
-                    if not selector:
-                        continue
-                    spec = _selector_specificity(selector)
-                    self._rules.append((spec, selector, props))
+            for spec, selector, props in _parse_css_rules(css_text):
+                self._rules.append((spec, selector, props))
+
+
+def _parse_css_rules(css_text: str) -> list[tuple[int, str, dict[str, str]]]:
+    """Parse CSS text into cascade-ready rules with precomputed specificity."""
+    parsed_rules: list[tuple[int, str, dict[str, str]]] = []
+    rules = tinycss2.parse_stylesheet(
+        css_text,
+        skip_comments=True,
+        skip_whitespace=True,
+    )
+    for rule in rules:
+        parsed_rules.extend(_parse_qualified_rule(rule))
+    return parsed_rules
+
+
+def _parse_qualified_rule(rule: object) -> list[tuple[int, str, dict[str, str]]]:
+    """Convert a tinycss2 qualified-rule into one rule per selector."""
+    if getattr(rule, "type", None) != "qualified-rule":
+        return []
+
+    selector_text = tinycss2.serialize(rule.prelude).strip()
+    props = _parse_rule_declarations(rule.content)
+    if not props:
+        return []
+
+    parsed: list[tuple[int, str, dict[str, str]]] = []
+    for selector in selector_text.split(","):
+        selector = selector.strip()
+        if selector:
+            parsed.append((_selector_specificity(selector), selector, props))
+    return parsed
+
+
+def _parse_rule_declarations(content: object) -> dict[str, str]:
+    """Extract declaration name/value pairs from a tinycss2 rule content block."""
+    declarations = tinycss2.parse_declaration_list(
+        content,
+        skip_comments=True,
+        skip_whitespace=True,
+    )
+    props: dict[str, str] = {}
+    for decl in declarations:
+        if getattr(decl, "type", None) != "declaration":
+            continue
+        props[decl.name.lower()] = tinycss2.serialize(decl.value).strip()
+    return props
 
 
 def _selector_specificity(selector: str) -> int:

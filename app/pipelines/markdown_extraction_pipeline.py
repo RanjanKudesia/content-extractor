@@ -1,7 +1,11 @@
 """Markdown extraction pipeline for content-extractor service."""
 
+import logging
 import re
 from typing import Any
+
+
+logger = logging.getLogger(__name__)
 
 
 class MarkdownExtractionPipeline:
@@ -9,9 +13,15 @@ class MarkdownExtractionPipeline:
 
     def run(self, file_bytes: bytes, include_media: bool = True) -> dict[str, Any]:
         """Extract Markdown and return JSON data."""
+        logger.debug(
+            "Starting Markdown extraction pipeline",
+            extra={"include_media": include_media,
+                   "size_bytes": len(file_bytes)},
+        )
         try:
             text = file_bytes.decode("utf-8-sig", errors="replace")
         except Exception as e:
+            logger.exception("Markdown decode failed")
             raise ValueError(f"Failed to decode Markdown: {str(e)}") from e
 
         lines = text.splitlines()
@@ -60,7 +70,7 @@ class MarkdownExtractionPipeline:
                 {"type": "paragraph", "index": paragraph_index})
             paragraph_index += 1
 
-        return {
+        result = {
             "metadata": {
                 "source_type": "markdown",
                 "extraction_mode": "markdown",
@@ -74,6 +84,15 @@ class MarkdownExtractionPipeline:
             "tables": tables,
             "media": media,
         }
+        logger.debug(
+            "Completed Markdown extraction pipeline",
+            extra={
+                "paragraph_count": len(paragraphs),
+                "table_count": len(tables),
+                "media_count": len(media),
+            },
+        )
+        return result
 
     # ── table helpers ─────────────────────────────────────────────────────────
 
@@ -225,70 +244,33 @@ class MarkdownExtractionPipeline:
     def _build_paragraph(
         self, block_lines: list[str], paragraph_index: int
     ) -> dict[str, Any]:
-        heading_level = None
-        style = None
-        is_bullet = False
-        is_numbered = False
-        numbering_format = None
-        list_indent = 0
-        code_fence_language: str | None = None
-
         first_stripped = block_lines[0].strip() if block_lines else ""
         fence_open_match = re.match(r"^(`{3,}|~{3,})(\S*)", first_stripped)
         if fence_open_match:
-            fence_marker = fence_open_match.group(1)
-            code_fence_language = fence_open_match.group(2) or ""
-            style = "CodeBlock"
-            body_lines: list[str] = []
-            for bline in block_lines[1:]:
-                if re.match(r"^" + re.escape(fence_marker) + r"\s*$", bline.strip()):
-                    break
-                body_lines.append(bline)
-            raw = "\n".join(body_lines)
-            runs = [{
-                "index": 0,
-                "text": raw,
-                "bold": None,
-                "italic": None,
-                "underline": None,
-                "font_name": None,
-                "font_size_pt": None,
-                "color_rgb": None,
-                "highlight_color": None,
-                "hyperlink_url": None,
-                "embedded_media": [],
-                "code": True,
-            }] if raw.strip() else []
+            (
+                raw,
+                style,
+                code_fence_language,
+                is_bullet,
+                is_numbered,
+                numbering_format,
+                list_indent,
+                runs,
+            ) = self._build_code_fence_paragraph(block_lines, fence_open_match)
         else:
-            first_line_raw = block_lines[0] if block_lines else ""
-            raw = "\n".join(block_lines).strip()
+            (
+                raw,
+                style,
+                code_fence_language,
+                is_bullet,
+                is_numbered,
+                numbering_format,
+                list_indent,
+                runs,
+            ) = self._build_regular_paragraph(block_lines)
 
-            heading_match = re.match(r"^\s{0,3}(#{1,6})\s+(.*)$", raw)
-            if heading_match:
-                heading_level = len(heading_match.group(1))
-                raw = heading_match.group(2).strip()
-                style = f"Heading {heading_level}"
-            else:
-                bullet_match = re.match(r"^(\s*)[-*+]\s+(.*)$", first_line_raw)
-                number_match = re.match(
-                    r"^(\s*)(\d+[.)])\s+(.*)$", first_line_raw)
-                if bullet_match:
-                    is_bullet = True
-                    numbering_format = "bullet"
-                    list_indent = len(bullet_match.group(1))
-                    m = re.match(r"^\s*[-*+]\s+(.*)", raw, re.DOTALL)
-                    raw = m.group(1).strip() if m else raw
-                elif number_match:
-                    is_numbered = True
-                    numbering_format = number_match.group(2)
-                    list_indent = len(number_match.group(1))
-                    m = re.match(r"^\s*\d+[.)]\s+(.*)", raw, re.DOTALL)
-                    raw = m.group(1).strip() if m else raw
-            runs = self._parse_inline_runs(raw)
-
-        list_kind: str | None = (
-            "bullet" if is_bullet else ("numbered" if is_numbered else None)
-        )
+        list_kind = self._list_kind(
+            is_bullet=is_bullet, is_numbered=is_numbered)
 
         # Compute indent level (2-space units) and ordered-list start number.
         indent_level = list_indent // 2 if list_indent else 0
@@ -321,6 +303,116 @@ class MarkdownExtractionPipeline:
             "runs": runs,
             "source": {"format": "markdown"},
         }
+
+    @staticmethod
+    def _list_kind(*, is_bullet: bool, is_numbered: bool) -> str | None:
+        if is_bullet:
+            return "bullet"
+        if is_numbered:
+            return "numbered"
+        return None
+
+    def _build_code_fence_paragraph(
+        self,
+        block_lines: list[str],
+        fence_open_match: re.Match,
+    ) -> tuple[str, str, str, bool, bool, str | None, int, list[dict[str, Any]]]:
+        fence_marker = fence_open_match.group(1)
+        code_fence_language = fence_open_match.group(2) or ""
+        body_lines: list[str] = []
+        for bline in block_lines[1:]:
+            if re.match(r"^" + re.escape(fence_marker) + r"\s*$", bline.strip()):
+                break
+            body_lines.append(bline)
+
+        raw = "\n".join(body_lines)
+        runs = self._build_code_runs(raw)
+        return (
+            raw,
+            "CodeBlock",
+            code_fence_language,
+            False,
+            False,
+            None,
+            0,
+            runs,
+        )
+
+    @staticmethod
+    def _build_code_runs(raw: str) -> list[dict[str, Any]]:
+        if not raw.strip():
+            return []
+        return [{
+            "index": 0,
+            "text": raw,
+            "bold": None,
+            "italic": None,
+            "underline": None,
+            "font_name": None,
+            "font_size_pt": None,
+            "color_rgb": None,
+            "highlight_color": None,
+            "hyperlink_url": None,
+            "embedded_media": [],
+            "code": True,
+        }]
+
+    def _build_regular_paragraph(
+        self,
+        block_lines: list[str],
+    ) -> tuple[str, str | None, str | None, bool, bool, str | None, int, list[dict[str, Any]]]:
+        first_line_raw = block_lines[0] if block_lines else ""
+        raw = "\n".join(block_lines).strip()
+
+        style = None
+        is_bullet = False
+        is_numbered = False
+        numbering_format: str | None = None
+        list_indent = 0
+
+        heading_match = re.match(r"^\s{0,3}(#{1,6})\s+(.*)$", raw)
+        if heading_match:
+            level = len(heading_match.group(1))
+            raw = heading_match.group(2).strip()
+            style = f"Heading {level}"
+        else:
+            is_bullet, is_numbered, numbering_format, list_indent, raw = self._parse_list_prefix(
+                first_line_raw=first_line_raw,
+                raw=raw,
+            )
+
+        runs = self._parse_inline_runs(raw)
+        return (
+            raw,
+            style,
+            None,
+            is_bullet,
+            is_numbered,
+            numbering_format,
+            list_indent,
+            runs,
+        )
+
+    def _parse_list_prefix(
+        self,
+        *,
+        first_line_raw: str,
+        raw: str,
+    ) -> tuple[bool, bool, str | None, int, str]:
+        bullet_match = re.match(r"^(\s*)[-*+]\s+(.*)$", first_line_raw)
+        if bullet_match:
+            list_indent = len(bullet_match.group(1))
+            m = re.match(r"^\s*[-*+]\s+(.*)", raw, re.DOTALL)
+            return True, False, "bullet", list_indent, (m.group(1).strip() if m else raw)
+
+        number_match = re.match(r"^(\s*)(\d+[.)])\s+(.*)$", first_line_raw)
+        if number_match:
+            list_indent = len(number_match.group(1))
+            numbering_format = number_match.group(2)
+            m = re.match(r"^\s*\d+[.)]\s+(.*)", raw, re.DOTALL)
+            return False, True, numbering_format, list_indent, (m.group(1).strip() if m else raw)
+
+        return False, False, None, 0, raw
 
     # ── inline run parser ─────────────────────────────────────────────────────
 

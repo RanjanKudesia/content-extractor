@@ -89,6 +89,47 @@ class S3StorageAdapter:
                 f"S3 delete failed ({code}): {message}."
             ) from e
 
+    def download_bytes(self, key: str) -> bytes:
+        try:
+            response = self.client.get_object(Bucket=self.bucket_name, Key=key)
+            body = response.get("Body")
+            if body is None:
+                raise S3UploadError("S3 response body missing")
+            data = body.read()
+            self.logger.debug(
+                "S3 download succeeded", extra={"s3_key": key, "size_bytes": len(data)}
+            )
+            return data
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "Unknown")
+            message = e.response.get("Error", {}).get("Message", str(e))
+            self.logger.exception("S3 download failed", extra={
+                                  "s3_key": key, "error_code": code})
+            raise S3UploadError(
+                f"S3 download failed ({code}): {message}."
+            ) from e
+
+    def generate_presigned_download_url(self, key: str, expires_in_seconds: int = 3600) -> str:
+        try:
+            url = self.client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": self.bucket_name, "Key": key},
+                ExpiresIn=expires_in_seconds,
+            )
+            self.logger.debug(
+                "S3 presigned URL generated",
+                extra={"s3_key": key, "expires_in_seconds": expires_in_seconds},
+            )
+            return url
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "Unknown")
+            message = e.response.get("Error", {}).get("Message", str(e))
+            self.logger.exception("S3 presigned URL generation failed", extra={
+                                  "s3_key": key, "error_code": code})
+            raise S3UploadError(
+                f"S3 presigned URL generation failed ({code}): {message}."
+            ) from e
+
     def check_bucket_access(self) -> bool:
         try:
             self.client.head_bucket(Bucket=self.bucket_name)
@@ -99,6 +140,43 @@ class S3StorageAdapter:
             self.logger.warning("S3 bucket access check failed", extra={
                                 "bucket": self.bucket_name})
             return False
+
+    def object_exists(self, key: str) -> bool:
+        """Return True if the object exists in the bucket."""
+        try:
+            self.client.head_object(Bucket=self.bucket_name, Key=key)
+            return True
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") in ("404", "NoSuchKey"):
+                return False
+            code = e.response.get("Error", {}).get("Code", "Unknown")
+            raise S3UploadError(f"S3 head_object failed ({code}): {str(e)}") from e
+
+    def delete_keys(self, keys: list[str]) -> int:
+        """Batch-delete up to 1000 keys per call. Returns the number deleted."""
+        if not keys:
+            return 0
+        deleted = 0
+        chunk_size = 1000
+        for i in range(0, len(keys), chunk_size):
+            chunk = keys[i : i + chunk_size]
+            objects = [{"Key": k} for k in chunk]
+            try:
+                resp = self.client.delete_objects(
+                    Bucket=self.bucket_name,
+                    Delete={"Objects": objects, "Quiet": False},
+                )
+                deleted += len(resp.get("Deleted", []))
+                for err in resp.get("Errors", []):
+                    self.logger.warning(
+                        "S3 batch delete partial error",
+                        extra={"key": err.get("Key"), "code": err.get("Code")},
+                    )
+            except ClientError as e:
+                code = e.response.get("Error", {}).get("Code", "Unknown")
+                self.logger.exception("S3 batch delete failed")
+                raise S3UploadError(f"S3 batch delete failed ({code}): {str(e)}") from e
+        return deleted
 
     def build_key(self, *parts: str) -> str:
         segments = [self.key_prefix]

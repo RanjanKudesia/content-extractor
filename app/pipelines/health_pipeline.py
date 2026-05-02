@@ -1,4 +1,9 @@
+import logging
+
 from app.adapters.system_health_adapter import SystemHealthAdapter
+
+
+logger = logging.getLogger(__name__)
 
 
 class HealthPipeline:
@@ -6,4 +11,8 @@ class HealthPipeline:
         self.adapter = adapter
 
     def run(self) -> dict[str, str]:
-        return self.adapter.fetch()
+        logger.debug("Running health pipeline")
+        result = self.adapter.fetch()
+        logger.debug("Health pipeline completed", extra={
+                     "status": result.get("status")})
+        return result

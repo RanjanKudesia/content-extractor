@@ -1,8 +1,12 @@
 """PowerPoint extraction pipeline for content-extractor service."""
 
+import logging
 from typing import Any
 
 from app.pipelines.ppt_xml_extraction_pipeline import PptXmlExtractionPipeline
+
+
+logger = logging.getLogger(__name__)
 
 
 class PptExtractionPipeline:
@@ -244,6 +248,14 @@ class PptExtractionPipeline:
         output_basename: str = "",
     ) -> dict[str, Any]:
         """Extract PowerPoint and return JSON data."""
+        logger.info(
+            "Starting PPT extraction pipeline",
+            extra={
+                "include_media": include_media,
+                "output_basename": output_basename,
+                "size_bytes": len(file_bytes),
+            },
+        )
         xml_payload, _ = self.pipeline.run(
             file_bytes=file_bytes,
             output_basename=output_basename,
@@ -300,7 +312,7 @@ class PptExtractionPipeline:
                 "relationships": slide.get("relationships"),
             })
 
-        return {
+        result = {
             "format": "json",
             "document_type": "pptx",
             "metadata": {
@@ -327,3 +339,13 @@ class PptExtractionPipeline:
                 "content_types": xml_payload.get("content_types"),
             },
         }
+        logger.info(
+            "Completed PPT extraction pipeline",
+            extra={
+                "slide_count": len(slides),
+                "paragraph_count": len(paragraphs),
+                "table_count": len(tables),
+                "media_count": len(media),
+            },
+        )
+        return result

@@ -7,10 +7,11 @@ FastAPI microservice for extracting structured content from uploaded documents.
 - Supports: docx, pdf, md, html, pptx, txt
 - Single extraction endpoint with automatic extension-based pipeline routing
 - JSON extraction for all supported formats
-- XML extraction only for docx and pptx
+- Optional media extraction toggle across all supported formats
+- Optional media storage mode: S3-backed or inline base64
 - Uploads original file and extracted media to S3-compatible object storage
-- Persists full extracted payload (JSON/XML structure) in MongoDB
-- Returns MongoDB record id in API response
+- Persists extracted JSON payload in S3 and stores only references in MongoDB
+- Returns upload metadata plus extracted content version identifiers in the API response
 
 ## Run
 
@@ -25,6 +26,7 @@ uvicorn main:app --host 127.0.0.1 --port 8004
 
 - `GET /health`
 - `POST /extract-content`
+- `GET /content`
 
 ## API Usage
 
@@ -41,43 +43,65 @@ Supported extensions:
 - `pptx`, `ppt`
 
 Output format rules:
-- `output_format=json` works for every supported extension.
-- `output_format=xml` is allowed only for docx and pptx uploads.
-- If `xml` is requested for other file types, the API returns HTTP 400 with a clear error message.
+- Extraction output is always JSON.
+- Media behavior is controlled by `extract_media` and `store_media`.
 
 Storage behavior:
 - Original uploaded file is stored in S3-compatible object storage.
-- Extracted media are uploaded to S3 and `s3_key` is written into media objects inside extracted payload.
-- The full extracted payload is stored in MongoDB.
+- Extracted payload is always JSON.
+- `extract_media=true` includes media objects in the extracted payload.
+- `extract_media=false` skips media extraction entirely.
+- `store_media=true` uploads extracted media to S3 and writes `s3_key` into media objects inside the extracted payload.
+- `store_media=false` keeps extracted media inline as base64 inside the payload.
+- The full extracted payload is stored in S3 and MongoDB only keeps references and metadata.
 - The service does not persist extracted payloads, extracted media, or PDF conversion artifacts on local disk.
-- API response includes `db_record_id` and `uploaded_file_s3_key`.
+- API response includes `upload_id`, `uploaded_file_s3_key`, and `content_versions`.
 
 ### Example: JSON extraction
 
 ```bash
 curl -X POST http://127.0.0.1:8004/extract-content \
   -F "file=@/absolute/path/sample.docx" \
-  -F "output_format=json"
+  -F "user_id=test-user" \
+  -F "extract_media=true" \
+  -F "store_media=true"
 ```
 
 ### Example response fields (excerpt)
 
 ```json
 {
-  "db_record_id": "67f02c2ef1a2b4d9c4f0a123",
+  "upload_id": "67f02c2ef1a2b4d9c4f0a123",
   "uploaded_file_s3_key": "content-extractor/uploads/abc123/abc123.docx",
-  "output_file_path": "virtual://extracted/abc123.json",
   "extension": "docx",
-  "output_format": "json"
+  "extract_media": true,
+  "store_media": true,
+  "content_versions": [
+    {
+      "content_id": "67f02c2ef1a2b4d9c4f0a456",
+      "version": 0
+    }
+  ]
 }
 ```
 
-### Example: XML extraction (DOCX/PPTX only)
+### Get extracted content
+
+`GET /content` supports two response modes via the query parameter `output_format`:
+
+- `output_format=json` (default): returns inline extracted JSON payload in the `data` field.
+- `output_format=file`: returns a presigned URL in `file_download_url` pointing to the stored extracted JSON file in S3.
+
+Example: inline JSON payload
 
 ```bash
-curl -X POST http://127.0.0.1:8004/extract-content \
-  -F "file=@/absolute/path/sample.pptx" \
-  -F "output_format=xml"
+curl "http://127.0.0.1:8004/content?content_id=<content_id>&version=0&output_format=json"
+```
+
+Example: presigned file URL
+
+```bash
+curl "http://127.0.0.1:8004/content?content_id=<content_id>&version=0&output_format=file"
 ```
 
 ## Required Environment Variables
@@ -111,4 +135,4 @@ Logging:
 
 - The endpoint validates file extension and routes to the matching pipeline.
 - For PDF files, the service uses the default pdf-to-docx extraction flow.
-- For most use cases, `output_format=json` is the recommended default.
+- `store_media=false` is useful when downstream consumers need the extracted payload to remain self-contained.

@@ -1,4 +1,5 @@
 import base64
+import logging
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,8 @@ NS = {
     "a": A_NS,
     "r": R_NS,
 }
+
+logger = logging.getLogger(__name__)
 
 
 def _detect_column_layout(shapes: list[dict]) -> dict[str, Any]:
@@ -82,7 +85,13 @@ class PptXmlExtractionPipeline:
     """
 
     def run(self, file_bytes: bytes, output_basename: str) -> tuple[dict[str, Any], str]:
+        logger.info(
+            "Starting PPT XML extraction",
+            extra={"output_basename": output_basename,
+                   "size_bytes": len(file_bytes)},
+        )
         if not is_zipfile(BytesIO(file_bytes)):
+            logger.warning("Invalid PPT payload received (not a ZIP archive)")
             raise ValueError(
                 "Invalid PPTX file: not a valid ZIP archive. File may be corrupted."
             )
@@ -153,6 +162,15 @@ class PptXmlExtractionPipeline:
             "binary_parts": binary_parts,
         }
 
+        logger.info(
+            "Completed PPT XML extraction",
+            extra={
+                "xml_part_count": len(xml_parts),
+                "media_count": len(media_bytes_by_path),
+                "binary_part_count": len(binary_parts),
+                "slide_count": len(slides),
+            },
+        )
         return extracted, f"virtual://extracted/{output_basename}.ppt.xml.json"
 
     def _extract_content_types(self, parts_by_path: dict[str, str]) -> dict[str, Any]:
@@ -340,63 +358,20 @@ class PptXmlExtractionPipeline:
 
         if shape_tree is not None:
             for draw_index, child in enumerate(shape_tree):
-                local = child.tag.rsplit(
-                    "}", 1)[-1] if "}" in child.tag else child.tag
-
-                if local == "sp":
-                    parsed = self._extract_shape_text(child)
-                    parsed["kind"] = "shape"
-                    parsed["draw_order"] = draw_index
-                    shapes.append(parsed)
-                    text = (parsed.get("text") or "").strip()
-                    if text:
-                        slide_text_chunks.append(text)
-                    if parsed.get("is_title") and text and title is None:
-                        title = text
-
-                elif local == "pic":
-                    parsed_pic = self._extract_picture(
-                        pic_el=child,
-                        slide_path=slide_path,
-                        slide_rels=slide_rels,
-                        media_bytes_by_path=media_bytes_by_path,
-                    )
-                    parsed_pic["kind"] = "picture"
-                    parsed_pic["draw_order"] = draw_index
-                    shapes.append(parsed_pic)
+                title, image_added, table_added = self._append_slide_shape(
+                    child=child,
+                    draw_index=draw_index,
+                    shapes=shapes,
+                    slide_text_chunks=slide_text_chunks,
+                    title=title,
+                    slide_path=slide_path,
+                    slide_rels=slide_rels,
+                    media_bytes_by_path=media_bytes_by_path,
+                )
+                if image_added:
                     image_count += 1
-
-                elif local == "graphicFrame":
-                    parsed_graphic = self._extract_graphic_frame(
-                        frame_el=child,
-                        slide_path=slide_path,
-                        slide_rels=slide_rels,
-                    )
-                    parsed_graphic["kind"] = "graphic_frame"
-                    parsed_graphic["draw_order"] = draw_index
-                    shapes.append(parsed_graphic)
-
-                    if parsed_graphic.get("graphic_type") == "table":
-                        table_count += 1
-
-                elif local == "grpSp":
-                    parsed_group = self._extract_group_shape(child)
-                    parsed_group["kind"] = "group_shape"
-                    parsed_group["draw_order"] = draw_index
-                    shapes.append(parsed_group)
-
-                elif local in {"spTree", "nvGrpSpPr", "grpSpPr"}:
-                    # container internals, skip explicit record
-                    continue
-
-                else:
-                    shapes.append(
-                        {
-                            "kind": "unknown",
-                            "draw_order": draw_index,
-                            "xml_tag": local,
-                        }
-                    )
+                if table_added:
+                    table_count += 1
 
         return {
             "title": title,
@@ -408,6 +383,125 @@ class PptXmlExtractionPipeline:
             "shapes": shapes,
             "notes": notes,
         }
+
+    def _append_slide_shape(
+        self,
+        *,
+        child,
+        draw_index: int,
+        shapes: list[dict[str, Any]],
+        slide_text_chunks: list[str],
+        title: str | None,
+        slide_path: str,
+        slide_rels: dict[str, dict[str, str]],
+        media_bytes_by_path: dict[str, str],
+    ) -> tuple[str | None, bool, bool]:
+        local = child.tag.rsplit("}", 1)[-1] if "}" in child.tag else child.tag
+        if local in {"spTree", "nvGrpSpPr", "grpSpPr"}:
+            return title, False, False
+
+        if local == "sp":
+            return self._append_text_shape(
+                child=child,
+                draw_index=draw_index,
+                shapes=shapes,
+                slide_text_chunks=slide_text_chunks,
+                title=title,
+            )
+        if local == "pic":
+            self._append_picture_shape(
+                child=child,
+                draw_index=draw_index,
+                shapes=shapes,
+                slide_path=slide_path,
+                slide_rels=slide_rels,
+                media_bytes_by_path=media_bytes_by_path,
+            )
+            return title, True, False
+        if local == "graphicFrame":
+            is_table = self._append_graphic_frame_shape(
+                child=child,
+                draw_index=draw_index,
+                shapes=shapes,
+                slide_path=slide_path,
+                slide_rels=slide_rels,
+            )
+            return title, False, is_table
+        if local == "grpSp":
+            parsed_group = self._extract_group_shape(child)
+            parsed_group["kind"] = "group_shape"
+            parsed_group["draw_order"] = draw_index
+            shapes.append(parsed_group)
+            return title, False, False
+
+        shapes.append(
+            {
+                "kind": "unknown",
+                "draw_order": draw_index,
+                "xml_tag": local,
+            }
+        )
+        return title, False, False
+
+    def _append_text_shape(
+        self,
+        *,
+        child,
+        draw_index: int,
+        shapes: list[dict[str, Any]],
+        slide_text_chunks: list[str],
+        title: str | None,
+    ) -> tuple[str | None, bool, bool]:
+        parsed = self._extract_shape_text(child)
+        parsed["kind"] = "shape"
+        parsed["draw_order"] = draw_index
+        shapes.append(parsed)
+
+        text = (parsed.get("text") or "").strip()
+        if text:
+            slide_text_chunks.append(text)
+        if parsed.get("is_title") and text and title is None:
+            title = text
+        return title, False, False
+
+    def _append_picture_shape(
+        self,
+        *,
+        child,
+        draw_index: int,
+        shapes: list[dict[str, Any]],
+        slide_path: str,
+        slide_rels: dict[str, dict[str, str]],
+        media_bytes_by_path: dict[str, str],
+    ) -> None:
+        parsed_pic = self._extract_picture(
+            pic_el=child,
+            slide_path=slide_path,
+            slide_rels=slide_rels,
+            media_bytes_by_path=media_bytes_by_path,
+        )
+        parsed_pic["kind"] = "picture"
+        parsed_pic["draw_order"] = draw_index
+        shapes.append(parsed_pic)
+
+    def _append_graphic_frame_shape(
+        self,
+        *,
+        child,
+        draw_index: int,
+        shapes: list[dict[str, Any]],
+        slide_path: str,
+        slide_rels: dict[str, dict[str, str]],
+    ) -> bool:
+        parsed_graphic = self._extract_graphic_frame(
+            frame_el=child,
+            slide_path=slide_path,
+            slide_rels=slide_rels,
+        )
+        parsed_graphic["kind"] = "graphic_frame"
+        parsed_graphic["draw_order"] = draw_index
+        shapes.append(parsed_graphic)
+        return parsed_graphic.get("graphic_type") == "table"
 
     def _extract_shape_text(self, sp_el) -> dict[str, Any]:
         name = sp_el.find("p:nvSpPr/p:cNvPr", NS)
@@ -468,13 +562,34 @@ class PptXmlExtractionPipeline:
 
         run_index = 0
         for child in p_el:
-            local = child.tag.rsplit(
-                "}", 1)[-1] if "}" in child.tag else child.tag
-            if local == "r":
-                t = child.find("a:t", NS)
-                text = t.text if t is not None and t.text is not None else ""
-                rpr = child.find("a:rPr", NS)
-                run = {
+            run_index = self._append_paragraph_child_run(
+                child=child,
+                run_index=run_index,
+                runs=runs,
+                text_chunks=text_chunks,
+            )
+
+        return {
+            "level": level,
+            "alignment": align,
+            "text": "".join(text_chunks),
+            "runs": runs,
+        }
+
+    def _append_paragraph_child_run(
+        self,
+        *,
+        child,
+        run_index: int,
+        runs: list[dict[str, Any]],
+        text_chunks: list[str],
+    ) -> int:
+        local = child.tag.rsplit("}", 1)[-1] if "}" in child.tag else child.tag
+        if local == "r":
+            text = self._text_from_child(child)
+            rpr = child.find("a:rPr", NS)
+            runs.append(
+                {
                     "index": run_index,
                     "text": text,
                     "bold": self._bool_attr(rpr, "b"),
@@ -484,34 +599,30 @@ class PptXmlExtractionPipeline:
                     "color_rgb": self._run_color(rpr),
                     "language": rpr.get("lang") if rpr is not None else None,
                 }
-                runs.append(run)
-                text_chunks.append(text)
-                run_index += 1
-            elif local == "br":
-                runs.append(
-                    {"index": run_index, "text": "\n", "line_break": True})
-                text_chunks.append("\n")
-                run_index += 1
-            elif local == "fld":
-                t = child.find("a:t", NS)
-                text = t.text if t is not None and t.text is not None else ""
-                runs.append(
-                    {
-                        "index": run_index,
-                        "text": text,
-                        "field_id": child.get("id"),
-                        "field_type": child.get("type"),
-                    }
-                )
-                text_chunks.append(text)
-                run_index += 1
+            )
+            text_chunks.append(text)
+            return run_index + 1
+        if local == "br":
+            runs.append({"index": run_index, "text": "\n", "line_break": True})
+            text_chunks.append("\n")
+            return run_index + 1
+        if local == "fld":
+            text = self._text_from_child(child)
+            runs.append(
+                {
+                    "index": run_index,
+                    "text": text,
+                    "field_id": child.get("id"),
+                    "field_type": child.get("type"),
+                }
+            )
+            text_chunks.append(text)
+            return run_index + 1
+        return run_index
 
-        return {
-            "level": level,
-            "alignment": align,
-            "text": "".join(text_chunks),
-            "runs": runs,
-        }
+    def _text_from_child(self, child) -> str:
+        t = child.find("a:t", NS)
+        return t.text if t is not None and t.text is not None else ""
 
     def _extract_picture(
         self,
@@ -674,7 +785,7 @@ class PptXmlExtractionPipeline:
         parts_by_path: dict[str, str],
     ) -> dict[str, Any] | None:
         notes_rel = None
-        for _, rel in slide_rels.items():
+        for rel in slide_rels.values():
             rel_type = rel.get("type") or ""
             if rel_type.endswith("/notesSlide"):
                 notes_rel = rel

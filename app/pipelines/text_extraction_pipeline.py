@@ -1,10 +1,13 @@
 """Plain text extraction pipeline for content-extractor service."""
 
+import logging
 import re
 from typing import Any
 
 BULLET_PATTERN = r"^\s*[-*+]\s+"
 NUMBERED_PATTERN = r"^\s*\d+[.)]\s+"
+
+logger = logging.getLogger(__name__)
 
 
 class TextExtractionPipeline:
@@ -88,10 +91,16 @@ class TextExtractionPipeline:
         include_media: bool = True,
     ) -> dict[str, Any]:
         """Extract plain text and return JSON data."""
+        logger.debug(
+            "Starting TXT extraction pipeline",
+            extra={"include_media": include_media,
+                   "size_bytes": len(file_bytes)},
+        )
         _ = include_media
         try:
             text = file_bytes.decode("utf-8-sig", errors="replace")
         except Exception as e:
+            logger.exception("TXT decode failed")
             raise ValueError(f"Failed to decode text: {str(e)}") from e
 
         lines = text.splitlines()
@@ -145,7 +154,7 @@ class TextExtractionPipeline:
 
         flush_block()
 
-        return {
+        result = {
             "metadata": {
                 "source_type": "txt",
                 "extraction_mode": "txt",
@@ -159,3 +168,8 @@ class TextExtractionPipeline:
             "tables": [],
             "media": [],
         }
+        logger.debug(
+            "Completed TXT extraction pipeline",
+            extra={"paragraph_count": len(paragraphs)},
+        )
+        return result
